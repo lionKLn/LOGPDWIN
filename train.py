@@ -1,11 +1,30 @@
 import pandas as pd
 import numpy as np
 import torch
+import os
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OneHotEncoder
 from transformers import AutoTokenizer, AutoModel
+
+# 0. 设备检测：优先 NPU，其次 CUDA，否则 CPU
+try:
+    import torch_npu
+    npu_available = torch.npu.is_available()
+except ImportError:
+    npu_available = False
+
+if npu_available:
+    device = torch.device("npu:0")
+    # 可选：设定默认 NPU
+    torch.npu.set_device(0)
+elif torch.cuda.is_available():
+    device = torch.device("cuda:0")
+else:
+    device = torch.device("cpu")
+
+print(f"Using device: {device}")
 
 # 1. 加载 CSV
 data = pd.read_csv('dataset/data1.csv')
@@ -13,14 +32,14 @@ data = pd.read_csv('dataset/data1.csv')
 # 2. 分离特征和标签
 y = (data['false_positives'] == 'FALSE').astype(int).values  # 1 表示真正异常
 
-# 3. One‑Hot 编码其他列
-categorical_cols = ['api_ut', 'oracle_name', 'component', 'component_set', 'module']
+# 3. One-Hot 编码其他列
+categorical_cols = ['api_ut', 'oracle_name', 'sut.component', 'sut.component_set', 'sut.module']
 encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
 X_cat = encoder.fit_transform(data[categorical_cols].astype(str))
 
 # 4. CodeBERT 嵌入 tags
 tokenizer = AutoTokenizer.from_pretrained("microsoft/codebert-base")
-codebert = AutoModel.from_pretrained("microsoft/codebert-base")
+codebert = AutoModel.from_pretrained("microsoft/codebert-base").to(device)
 codebert.eval()  # 仅用于 embedding
 
 def embed_codebert(text_list, batch_size=16):
@@ -28,27 +47,38 @@ def embed_codebert(text_list, batch_size=16):
     with torch.no_grad():
         for i in range(0, len(text_list), batch_size):
             batch = text_list[i:i+batch_size]
-            inputs = tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=128)
+            inputs = tokenizer(
+                batch,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=128
+            )
+            # 把输入张量搬到 device
+            inputs = {k: v.to(device) for k, v in inputs.items()}
             outputs = codebert(**inputs)
-            cls_emb = outputs.last_hidden_state[:,0,:]
-            all_emb.append(cls_emb)
+            cls_emb = outputs.last_hidden_state[:, 0, :]  # (B, 768)
+            all_emb.append(cls_emb.cpu())  # 收集到 CPU，以便后续 concat/numpy
     return torch.cat(all_emb, dim=0)
 
 tags = data['tags'].fillna("").tolist()
-X_tags = embed_codebert(tags)
+X_tags = embed_codebert(tags)  # torch.Tensor on CPU now
 
 # 5. 拼接所有特征向量
+# X_cat 是 numpy，X_tags 是 torch.Tensor.cpu()
 X = np.concatenate([X_cat, X_tags.numpy()], axis=1)
 print(f"特征总维度：{X.shape}")
 
 # 6. 划分训练/测试集
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+X_train_np, X_test_np, y_train_np, y_test_np = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
 
-# 转为 Tensor
-X_train = torch.tensor(X_train, dtype=torch.float32)
-y_train = torch.tensor(y_train, dtype=torch.long)
-X_test = torch.tensor(X_test, dtype=torch.float32)
-y_test = torch.tensor(y_test, dtype=torch.long)
+# 转为张量并搬到 device
+X_train = torch.tensor(X_train_np, dtype=torch.float32, device=device)
+y_train = torch.tensor(y_train_np, dtype=torch.long, device=device)
+X_test  = torch.tensor(X_test_np,  dtype=torch.float32, device=device)
+y_test  = torch.tensor(y_test_np,  dtype=torch.long, device=device)
 
 # 7. 建立简单全连接模型
 class LogClassifier(nn.Module):
@@ -62,9 +92,7 @@ class LogClassifier(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-model = LogClassifier(X_train.size(1))
-device = torch.device("cpu")
-model.to(device)
+model = LogClassifier(X_train.size(1)).to(device)
 
 # 损失 + 优化器
 criterion = nn.CrossEntropyLoss()
@@ -72,9 +100,9 @@ optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
 # 8. 训练循环
 epochs = 15
-for epoch in range(1, epochs+1):
+for epoch in range(1, epochs + 1):
     model.train()
-    logits = model(X_train)
+    logits = model(X_train)      # X_train 已在 device
     loss = criterion(logits, y_train)
     optimizer.zero_grad()
     loss.backward()
@@ -88,3 +116,12 @@ with torch.no_grad():
     preds = torch.argmax(logits, dim=1)
     acc = (preds == y_test).float().mean().item()
     print(f"Test Accuracy: {acc*100:.2f}%")
+
+# 10. 模型保存
+output_dir = "outputs"
+os.makedirs(output_dir, exist_ok=True)
+
+# 10 保存 state_dict
+sd_path = os.path.join(output_dir, "log_classifier_state_dict.pth")
+torch.save(model.state_dict(), sd_path)
+print(f"Saved model state_dict to {sd_path}")

@@ -5,6 +5,10 @@ from transformers import RobertaTokenizer, RobertaModel
 from sklearn.preprocessing import OneHotEncoder
 import numpy as np
 
+# 确保导入NPU的相关库
+import torch_npu
+
+
 class LogDataset(Dataset):
     def __init__(self, csv_path, codebert_model="./codebert", max_length=128):
         # 读取csv
@@ -19,7 +23,7 @@ class LogDataset(Dataset):
         self.codebert.eval()  # 不训练embedding
 
         # 需要做one-hot编码的列
-        onehot_columns = ["api_ut", "oracle_name", "component", "component_set", "module"]
+        onehot_columns = ["api_ut", "oracle_name", "sut.component", "sut.component_set", "sut.module"]
         self.onehot_encoder = OneHotEncoder(sparse=False, handle_unknown="ignore")
         self.onehot_features = self.onehot_encoder.fit_transform(self.df[onehot_columns])
 
@@ -27,49 +31,30 @@ class LogDataset(Dataset):
         self.tags = self.df["tags"].fillna("").tolist()
         self.max_length = max_length
 
-    # def _preprocess(self):
-    #     samples = []
-    #     for _, row in self.data.iterrows():
-    #         # 构造输入文本
-    #         text = f"[{row['api_ut']}] calls [{row['oracle_name']}] in [{row['component']}] / [{row['module']}] with tags: {row['tags']}"
-    #
-    #         # 标签转换
-    #         label = 1 if str(row['false_positives']).strip().upper() == "TRUE" else 0
-    #         print(label)
-    #
-    #         # 编码文本
-    #         encoding = self.tokenizer(
-    #             text,
-    #             padding="max_length",
-    #             truncation=True,
-    #             max_length=self.max_length,
-    #             return_tensors="pt"
-    #         )
-    #         print(text)
-    #         sample = {
-    #             "input_ids": encoding["input_ids"].squeeze(0),
-    #             "attention_mask": encoding["attention_mask"].squeeze(0),
-    #             "label": torch.tensor(label, dtype=torch.long)
-    #         }
-    #         samples.append(sample)
-    #     return samples
+        # 将模型移动到NPU
+        self.device = torch.device("npu")  # 指定使用NPU设备
+        self.codebert = self.codebert.to(self.device)
 
     def __len__(self):
-        return len(self.samples)
+        return len(self.df)
 
     def __getitem__(self, idx):
         # One-hot编码特征
-        onehot_feat = torch.tensor(self.onehot_features[idx], dtype=torch.float)
+        onehot_feat = torch.tensor(self.onehot_features[idx], dtype=torch.float).to(self.device)
 
         # CodeBERT embedding
         tag_text = self.tags[idx]
-        encoded_input = self.tokenizer(tag_text, truncation=True, padding="max_length", max_length=self.max_length, return_tensors="pt")
-        with torch.no_grad():
-            outputs = self.codebert(**{k: v for k, v in encoded_input.items()})
-            # 使用CLS token表示
-            tag_embedding = outputs.last_hidden_state[:,0,:].squeeze(0)  # shape: (768,)
+        encoded_input = self.tokenizer(tag_text, truncation=True, padding="max_length", max_length=self.max_length,
+                                       return_tensors="pt")
+        # 将输入移至NPU
+        encoded_input = {k: v.to(self.device) for k, v in encoded_input.items()}
 
-        label = torch.tensor(self.labels[idx], dtype=torch.long)
+        with torch.no_grad():
+            outputs = self.codebert(**encoded_input)
+            # 使用CLS token表示
+            tag_embedding = outputs.last_hidden_state[:, 0, :].squeeze(0)  # shape: (768,)
+
+        label = torch.tensor(self.labels[idx], dtype=torch.long).to(self.device)
 
         return {
             "onehot": onehot_feat,
@@ -78,15 +63,18 @@ class LogDataset(Dataset):
         }
 
 
-
 if __name__ == "__main__":
     dataset = LogDataset("dataset/data1.csv")
     dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
 
+    # 在每个batch上移动数据到NPU
     for batch in dataloader:
-        print("One-hot shape:", batch["onehot"].shape)  # (B, N_onehot)
-        print("Tag embedding shape:", batch["tag_embedding"].shape)  # (B, 768)
-        print("Label:", batch["label"])
+        # 确保数据都在NPU设备上
+        onehot = batch["onehot"]
+        tag_embedding = batch["tag_embedding"]
+        label = batch["label"]
+
+        print("One-hot shape:", onehot.shape)  # (B, N_onehot)
+        print("Tag embedding shape:", tag_embedding.shape)  # (B, 768)
+        print("Label:", label)
         break
-
-
