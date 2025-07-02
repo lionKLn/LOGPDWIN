@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.optim as optim
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OneHotEncoder
+from sklearn.metrics import recall_score, f1_score  # 新增
 from transformers import AutoTokenizer, AutoModel
 
 # 0. 设备检测：优先 NPU，其次 CUDA，否则 CPU
@@ -16,7 +17,6 @@ except ImportError:
 
 if npu_available:
     device = torch.device("npu:0")
-    # 可选：设定默认 NPU
     torch.npu.set_device(0)
 elif torch.cuda.is_available():
     device = torch.device("cuda:0")
@@ -39,7 +39,7 @@ X_cat = encoder.fit_transform(data[categorical_cols].astype(str))
 # 4. CodeBERT 嵌入 tags
 tokenizer = AutoTokenizer.from_pretrained("./codebert")
 codebert = AutoModel.from_pretrained("./codebert").to(device)
-codebert.eval()  # 仅用于 embedding
+codebert.eval()
 
 def embed_codebert(text_list, batch_size=16):
     all_emb = []
@@ -53,18 +53,16 @@ def embed_codebert(text_list, batch_size=16):
                 truncation=True,
                 max_length=128
             )
-            # 把输入张量搬到 device
             inputs = {k: v.to(device) for k, v in inputs.items()}
             outputs = codebert(**inputs)
-            cls_emb = outputs.last_hidden_state[:, 0, :]  # (B, 768)
-            all_emb.append(cls_emb.cpu())  # 收集到 CPU，以便后续 concat/numpy
+            cls_emb = outputs.last_hidden_state[:, 0, :]
+            all_emb.append(cls_emb.cpu())
     return torch.cat(all_emb, dim=0)
 
 tags = data['tags'].fillna("").tolist()
-X_tags = embed_codebert(tags)  # torch.Tensor on CPU now
+X_tags = embed_codebert(tags)
 
 # 5. 拼接所有特征向量
-# X_cat 是 numpy，X_tags 是 torch.Tensor.cpu()
 X = np.concatenate([X_cat, X_tags.numpy()], axis=1)
 print(f"特征总维度：{X.shape}")
 
@@ -73,7 +71,6 @@ X_train_np, X_test_np, y_train_np, y_test_np = train_test_split(
     X, y, test_size=0.2, random_state=42
 )
 
-# 转为张量并搬到 device
 X_train = torch.tensor(X_train_np, dtype=torch.float32, device=device)
 y_train = torch.tensor(y_train_np, dtype=torch.long, device=device)
 X_test  = torch.tensor(X_test_np,  dtype=torch.float32, device=device)
@@ -93,7 +90,6 @@ class LogClassifier(nn.Module):
 
 model = LogClassifier(X_train.size(1)).to(device)
 
-# 损失 + 优化器
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
@@ -101,20 +97,30 @@ optimizer = optim.Adam(model.parameters(), lr=1e-3)
 epochs = 15
 for epoch in range(1, epochs + 1):
     model.train()
-    logits = model(X_train)      # X_train 已在 device
+    logits = model(X_train)
     loss = criterion(logits, y_train)
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
     print(f"Epoch {epoch}/{epochs}, Loss: {loss.item():.4f}")
 
-# 9. 测试评估
+# 9. 测试评估（增加 recall 和 F1 计算）
 model.eval()
 with torch.no_grad():
     logits = model(X_test)
-    preds = torch.argmax(logits, dim=1)
-    acc = (preds == y_test).float().mean().item()
+    preds = torch.argmax(logits, dim=1).cpu().numpy()
+    true = y_test.cpu().numpy()
+
+    # Accuracy
+    acc = (preds == true).mean()
+    # Recall（针对正例 1 的召回率）
+    recall = recall_score(true, preds, pos_label=1)
+    # F1 分数
+    f1 = f1_score(true, preds, pos_label=1)
+
     print(f"Test Accuracy: {acc*100:.2f}%")
+    print(f"Test Recall:   {recall*100:.2f}%")
+    print(f"Test F1 Score: {f1*100:.2f}%")
 
 # 10. 测试评估之后，保存 state_dict
 save_path = "log_classifier_state_dict.pth"
