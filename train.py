@@ -1,16 +1,11 @@
-import os
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support, classification_report
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import TensorDataset, DataLoader
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OneHotEncoder
 from transformers import AutoTokenizer, AutoModel
-
-from sklearn.metrics import confusion_matrix
 
 # 0. 设备检测：优先 NPU，其次 CUDA，否则 CPU
 try:
@@ -21,18 +16,20 @@ except ImportError:
 
 if npu_available:
     device = torch.device("npu:0")
+    # 可选：设定默认 NPU
     torch.npu.set_device(0)
 elif torch.cuda.is_available():
     device = torch.device("cuda:0")
 else:
     device = torch.device("cpu")
+
 print(f"Using device: {device}")
 
 # 1. 加载 CSV
 data = pd.read_csv('dataset/labeled_data.csv')
 
-# 2. 分离标签（1 表示真正异常）
-y = (data['false_positives'] == 'FALSE').astype(int).values
+# 2. 分离特征和标签
+y = (data['false_positives'] == 'FALSE').astype(int).values  # 1 表示真正异常
 
 # 3. One-Hot 编码其他列
 categorical_cols = ['api_ut', 'oracle_name', 'sut.component', 'sut.component_set', 'sut.module']
@@ -40,50 +37,49 @@ encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
 X_cat = encoder.fit_transform(data[categorical_cols].astype(str))
 
 # 4. CodeBERT 嵌入 tags
-tokenizer = AutoTokenizer.from_pretrained("microsoft/codebert-base")
-codebert = AutoModel.from_pretrained("microsoft/codebert-base").to(device)
-codebert.eval()
+tokenizer = AutoTokenizer.from_pretrained("./codebert")
+codebert = AutoModel.from_pretrained("./codebert").to(device)
+codebert.eval()  # 仅用于 embedding
 
-def embed_codebert(texts, batch_size=16):
-    embs = []
+def embed_codebert(text_list, batch_size=16):
+    all_emb = []
     with torch.no_grad():
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i+batch_size]
-            tokens = tokenizer(batch,
-                               return_tensors="pt",
-                               padding=True,
-                               truncation=True,
-                               max_length=128)
-            tokens = {k:v.to(device) for k,v in tokens.items()}
-            out = codebert(**tokens)
-            cls_emb = out.last_hidden_state[:,0,:]  # (B, 768)
-            embs.append(cls_emb.cpu())
-    return torch.cat(embs, dim=0)
+        for i in range(0, len(text_list), batch_size):
+            batch = text_list[i:i+batch_size]
+            inputs = tokenizer(
+                batch,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=128
+            )
+            # 把输入张量搬到 device
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            outputs = codebert(**inputs)
+            cls_emb = outputs.last_hidden_state[:, 0, :]  # (B, 768)
+            all_emb.append(cls_emb.cpu())  # 收集到 CPU，以便后续 concat/numpy
+    return torch.cat(all_emb, dim=0)
 
 tags = data['tags'].fillna("").tolist()
-X_tags = embed_codebert(tags)  # CPU tensor
+X_tags = embed_codebert(tags)  # torch.Tensor on CPU now
 
-# 5. 拼接所有特征并划分训练/验证/测试
-X_all = np.concatenate([X_cat, X_tags.numpy()], axis=1)
-X_train_val, X_test, y_train_val, y_test = train_test_split(
-    X_all, y, test_size=0.2, random_state=42, stratify=y
+# 5. 拼接所有特征向量
+# X_cat 是 numpy，X_tags 是 torch.Tensor.cpu()
+X = np.concatenate([X_cat, X_tags.numpy()], axis=1)
+print(f"特征总维度：{X.shape}")
+
+# 6. 划分训练/测试集
+X_train_np, X_test_np, y_train_np, y_test_np = train_test_split(
+    X, y, test_size=0.2, random_state=42
 )
-X_train, X_val, y_train, y_val = train_test_split(
-    X_train_val, y_train_val, test_size=0.1, random_state=42, stratify=y_train_val
-)
 
-# 6. 转为 TensorDataset + DataLoader
-def make_loader(X, y, batch_size=32, shuffle=False):
-    tX = torch.tensor(X, dtype=torch.float32)
-    ty = torch.tensor(y, dtype=torch.long)
-    ds = TensorDataset(tX, ty)
-    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
+# 转为张量并搬到 device
+X_train = torch.tensor(X_train_np, dtype=torch.float32, device=device)
+y_train = torch.tensor(y_train_np, dtype=torch.long, device=device)
+X_test  = torch.tensor(X_test_np,  dtype=torch.float32, device=device)
+y_test  = torch.tensor(y_test_np,  dtype=torch.long, device=device)
 
-train_loader = make_loader(X_train, y_train, batch_size=64, shuffle=True)
-val_loader   = make_loader(X_val,   y_val,   batch_size=64, shuffle=False)
-test_loader  = make_loader(X_test,  y_test,  batch_size=64, shuffle=False)
-
-# 7. 定义模型
+# 7. 建立简单全连接模型
 class LogClassifier(nn.Module):
     def __init__(self, input_dim, hidden_dim=128):
         super().__init__()
@@ -95,71 +91,32 @@ class LogClassifier(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-model = LogClassifier(input_dim=X_all.shape[1], hidden_dim=256).to(device)
+model = LogClassifier(X_train.size(1)).to(device)
 
-# 8. 损失和优化器
+# 损失 + 优化器
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
-# 9. 训练 + 验证
-best_val_f1 = 0.0
-best_model_path = "outputs/best_model.pth"
-os.makedirs("outputs", exist_ok=True)
-
-for epoch in range(1, 16):
+# 8. 训练循环
+epochs = 15
+for epoch in range(1, epochs + 1):
     model.train()
-    total_loss = 0
-    for Xb, yb in train_loader:
-        Xb, yb = Xb.to(device), yb.to(device)
-        logits = model(Xb)
-        loss = criterion(logits, yb)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        total_loss += loss.item() * Xb.size(0)
-    avg_loss = total_loss / len(train_loader.dataset)
+    logits = model(X_train)      # X_train 已在 device
+    loss = criterion(logits, y_train)
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+    print(f"Epoch {epoch}/{epochs}, Loss: {loss.item():.4f}")
 
-    # 验证
-    model.eval()
-    all_preds, all_labels = [], []
-    with torch.no_grad():
-        for Xb, yb in val_loader:
-            Xb, yb = Xb.to(device), yb.to(device)
-            logits = model(Xb)
-            preds = logits.argmax(dim=1)
-            all_preds.extend(preds.cpu().tolist())
-            all_labels.extend(yb.cpu().tolist())
-    prec, rec, f1, _ = precision_recall_fscore_support(all_labels, all_preds, average='binary', zero_division=0)
-    val_acc = accuracy_score(all_labels, all_preds)
-
-    print(f"Epoch {epoch:02d} — train_loss: {avg_loss:.4f} | val_acc: {val_acc:.4f} | val_f1: {f1:.4f}")
-
-    #查看预测的比例
-    cm = confusion_matrix(all_labels, all_preds)
-    print("Confusion Matrix:\n", cm)
-    # cm[i,j] 表示真实为 i, 预测为 j 的样本数量
-
-    # 查看预测为正(1)和负(0)的总数
-    import collections
-
-    print("Pred counts:", collections.Counter(all_preds))
-    print("True counts:", collections.Counter(all_labels))
-
-    # 保存最优
-    if f1 > best_val_f1:
-        best_val_f1 = f1
-        torch.save(model.state_dict(), best_model_path)
-
-# 10. 测试集评估
-print("\n=== Testing Best Model ===")
-model.load_state_dict(torch.load(best_model_path))
+# 9. 测试评估
 model.eval()
-all_preds, all_labels = [], []
 with torch.no_grad():
-    for Xb, yb in test_loader:
-        Xb, yb = Xb.to(device), yb.to(device)
-        logits = model(Xb)
-        all_preds.extend(logits.argmax(dim=1).cpu().tolist())
-        all_labels.extend(yb.cpu().tolist())
+    logits = model(X_test)
+    preds = torch.argmax(logits, dim=1)
+    acc = (preds == y_test).float().mean().item()
+    print(f"Test Accuracy: {acc*100:.2f}%")
 
-print(classification_report(all_labels, all_preds, target_names=["FP", "TrueAnomaly"]))
+# 10. 测试评估之后，保存 state_dict
+save_path = "log_classifier_state_dict.pth"
+torch.save(model.state_dict(), save_path)
+print(f"Model state_dict saved to {save_path}")
