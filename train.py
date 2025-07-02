@@ -10,6 +10,8 @@ import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
 from transformers import AutoTokenizer, AutoModel
 
+from sklearn.metrics import confusion_matrix
+
 # 0. 设备检测：优先 NPU，其次 CUDA，否则 CPU
 try:
     import torch_npu
@@ -131,6 +133,17 @@ for epoch in range(1, 16):
     val_acc = accuracy_score(all_labels, all_preds)
 
     print(f"Epoch {epoch:02d} — train_loss: {avg_loss:.4f} | val_acc: {val_acc:.4f} | val_f1: {f1:.4f}")
+
+    #查看预测的比例
+    cm = confusion_matrix(all_labels, all_preds)
+    print("Confusion Matrix:\n", cm)
+    # cm[i,j] 表示真实为 i, 预测为 j 的样本数量
+
+    # 查看预测为正(1)和负(0)的总数
+    import collections
+
+    print("Pred counts:", collections.Counter(all_preds))
+    print("True counts:", collections.Counter(all_labels))
 
     # 保存最优
     if f1 > best_val_f1:
