@@ -27,7 +27,7 @@ else:
 print(f"Using device: {device}")
 
 # 1. 加载 CSV
-data = pd.read_csv('dataset/data1.csv')
+data = pd.read_csv('dataset/labeled_data.csv')
 
 # 2. 分离标签（1 表示真正异常）
 y = (data['false_positives'] == 'FALSE').astype(int).values
