@@ -14,15 +14,15 @@ class LogDataset(Dataset):
 
         # Fields
         self.onehot_fields = ['oracle_name', 'sut.component', 'sut.component_set', 'sut.module']
-        self.codebert_fields = ['apt_ut', 'tag']
+        self.codebert_fields = ['api_ut', 'tags']
 
         # One-Hot Encoding
         self.onehot_encoder = OneHotEncoder(sparse=False, handle_unknown='ignore')
         self.onehot_encoded = self.onehot_encoder.fit_transform(self.df[self.onehot_fields])
 
         # Load CodeBERT
-        self.tokenizer = AutoTokenizer.from_pretrained("microsoft/codebert-base")
-        self.model = AutoModel.from_pretrained("microsoft/codebert-base")
+        self.tokenizer = AutoTokenizer.from_pretrained("./codebert")
+        self.model = AutoModel.from_pretrained("./codebert")
         self.model.eval()
 
         if hasattr(torch, 'npu'):
@@ -33,8 +33,8 @@ class LogDataset(Dataset):
         self.model.to(self.device)
 
         # Encode CodeBERT fields
-        self.apt_ut_embeddings = self.encode_column(self.df['apt_ut'])
-        self.tag_embeddings = self.encode_column(self.df['tag'])
+        self.apt_ut_embeddings = self.encode_column(self.df['api_ut'])
+        self.tag_embeddings = self.encode_column(self.df['tags'])
 
         self.onehot_dim = self.onehot_encoded.shape[1]
         self.codebert_dim = 768  # CodeBERT 默认输出维度
