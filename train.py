@@ -6,6 +6,28 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import recall_score, f1_score
 from dataloader_module import LogDataset, get_dataloader
 
+# Step 4: 初始化模型、损失函数、优化器
+# 如果安装并启用了 torch_npu，就可以用 NPU
+try:
+    import torch_npu
+    npu_available = torch.npu.is_available()
+except ImportError:
+    npu_available = False
+
+# 再判断 CUDA
+cuda_available = torch.cuda.is_available()
+
+# 优先 NPU，其次 CUDA，否则 CPU
+if npu_available:
+    device = torch.device("npu:6")
+    # （可选）设定当前进程使用的 NPU 号
+    torch.npu.set_device(0)
+elif cuda_available:
+    device = torch.device("cuda:0")
+else:
+    device = torch.device("cpu")
+
+print(f"Using device: {device}")
 # -----------------------------
 # 模型定义
 # -----------------------------
@@ -38,10 +60,6 @@ test_loader = get_dataloader(test_df, batch_size=batch_size, shuffle=False)
 train_dataset = LogDataset(train_df)
 input_dim = train_dataset.get_feature_dim()
 
-# Step 4: 初始化模型、损失函数、优化器
-device = torch.device("npu" if hasattr(torch, 'npu') and torch.npu.is_available()
-                      else "cuda" if torch.cuda.is_available()
-                      else "cpu")
 
 model = LogClassifier(input_dim).to(device)
 criterion = nn.CrossEntropyLoss()
