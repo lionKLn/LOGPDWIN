@@ -1,82 +1,9 @@
-import pandas as pd
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.metrics import recall_score, f1_score  # 新增
-from transformers import AutoTokenizer, AutoModel
+from sklearn.metrics import recall_score, f1_score
+from dataloader_module import LogDataset, get_dataloader
 
-# 0. 设备检测：优先 NPU，其次 CUDA，否则 CPU
-try:
-    import torch_npu
-    npu_available = torch.npu.is_available()
-except ImportError:
-    npu_available = False
-
-if npu_available:
-    device = torch.device("npu:0")
-    torch.npu.set_device(0)
-elif torch.cuda.is_available():
-    device = torch.device("cuda:0")
-else:
-    device = torch.device("cpu")
-
-print(f"Using device: {device}")
-
-# 1. 加载 CSV
-data = pd.read_csv('dataset/labeled_data.csv')
-
-# 2. 分离特征和标签
-y = (data['false_positives'] == 'FALSE').astype(int).values  # 1 表示真正异常
-
-# 3. One-Hot 编码其他列
-categorical_cols = ['api_ut', 'oracle_name', 'sut.component', 'sut.component_set', 'sut.module']
-encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
-X_cat = encoder.fit_transform(data[categorical_cols].astype(str))
-
-# 4. CodeBERT 嵌入 tags
-tokenizer = AutoTokenizer.from_pretrained("./codebert")
-codebert = AutoModel.from_pretrained("./codebert").to(device)
-codebert.eval()
-
-def embed_codebert(text_list, batch_size=16):
-    all_emb = []
-    with torch.no_grad():
-        for i in range(0, len(text_list), batch_size):
-            batch = text_list[i:i+batch_size]
-            inputs = tokenizer(
-                batch,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=128
-            )
-            inputs = {k: v.to(device) for k, v in inputs.items()}
-            outputs = codebert(**inputs)
-            cls_emb = outputs.last_hidden_state[:, 0, :]
-            all_emb.append(cls_emb.cpu())
-    return torch.cat(all_emb, dim=0)
-
-tags = data['tags'].fillna("").tolist()
-X_tags = embed_codebert(tags)
-
-# 5. 拼接所有特征向量
-X = np.concatenate([X_cat, X_tags.numpy()], axis=1)
-print(f"特征总维度：{X.shape}")
-
-# 6. 划分训练/测试集
-X_train_np, X_test_np, y_train_np, y_test_np = train_test_split(
-    X, y, test_size=0.2, random_state=42
-)
-
-X_train = torch.tensor(X_train_np, dtype=torch.float32, device=device)
-y_train = torch.tensor(y_train_np, dtype=torch.long, device=device)
-X_test  = torch.tensor(X_test_np,  dtype=torch.float32, device=device)
-y_test  = torch.tensor(y_test_np,  dtype=torch.long, device=device)
-
-# 7. 建立简单全连接模型
 class LogClassifier(nn.Module):
     def __init__(self, input_dim, hidden_dim=128):
         super().__init__()
@@ -88,41 +15,59 @@ class LogClassifier(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-model = LogClassifier(X_train.size(1)).to(device)
 
+# Step 1: 加载数据
+csv_path = "your_data.csv"  # 替换为你的CSV路径
+batch_size = 32
+train_loader = get_dataloader(csv_path, batch_size=batch_size, shuffle=True)
+
+# Step 2: 获取输入维度
+dataset = LogDataset(csv_path)
+input_dim = dataset.get_feature_dim()
+
+# Step 3: 初始化模型、损失函数、优化器
+device = torch.device("npu" if hasattr(torch, 'npu') and torch.npu.is_available()
+                      else "cuda" if torch.cuda.is_available()
+                      else "cpu")
+
+
+model = LogClassifier(input_dim).to(device)
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=1e-3)
+optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
-# 8. 训练循环
-epochs = 15
-for epoch in range(1, epochs + 1):
+# Step 4: 训练模型
+epochs = 5
+for epoch in range(epochs):
+    total_loss = 0.0
+    all_preds = []
+    all_labels = []
+
     model.train()
-    logits = model(X_train)
-    loss = criterion(logits, y_train)
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
-    print(f"Epoch {epoch}/{epochs}, Loss: {loss.item():.4f}")
+    for features, labels in train_loader:
+        features = features.to(device)
+        labels = labels.to(device)
 
-# 9. 测试评估（增加 recall 和 F1 计算）
-model.eval()
-with torch.no_grad():
-    logits = model(X_test)
-    preds = torch.argmax(logits, dim=1).cpu().numpy()
-    true = y_test.cpu().numpy()
+        outputs = model(features)
+        loss = criterion(outputs, labels)
 
-    # Accuracy
-    acc = (preds == true).mean()
-    # Recall（针对正例 1 的召回率）
-    recall = recall_score(true, preds, pos_label=1)
-    # F1 分数
-    f1 = f1_score(true, preds, pos_label=1)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
 
-    print(f"Test Accuracy: {acc*100:.2f}%")
-    print(f"Test Recall:   {recall*100:.2f}%")
-    print(f"Test F1 Score: {f1*100:.2f}%")
+        total_loss += loss.item()
+        _, predicted = torch.max(outputs, 1)
 
-# 10. 测试评估之后，保存 state_dict
-save_path = "log_classifier_state_dict.pth"
-torch.save(model.state_dict(), save_path)
-print(f"Model state_dict saved to {save_path}")
+        all_preds.extend(predicted.cpu().numpy())
+        all_labels.extend(labels.cpu().numpy())
+
+    # 计算指标
+    acc = (torch.tensor(all_preds) == torch.tensor(all_labels)).sum().item() / len(all_labels)
+    recall = recall_score(all_labels, all_preds)
+    f1 = f1_score(all_labels, all_preds)
+
+    print(f"Epoch {epoch+1}/{epochs} - Loss: {total_loss:.4f} - "
+          f"Acc: {acc*100:.2f}% - Recall: {recall:.2f} - F1: {f1:.2f}")
+
+# Step 5: 保存模型
+torch.save(model.state_dict(), "log_classifier.pt")
+print("✅ 模型已保存为 log_classifier.pt")
