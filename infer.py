@@ -4,9 +4,20 @@ import numpy as np
 import pandas as pd
 import joblib
 import argparse
-from model import LogClassifier  # 确保你的模型结构保存在 model.py 中并可导入
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.compose import ColumnTransformer
+
+class LogClassifier(nn.Module):
+    def __init__(self, input_dim, hidden_dim=128):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 2)
+        )
+
+    def forward(self, x):
+        return self.net(x)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -20,7 +31,7 @@ def main():
     device = torch.device("cpu")
 
     # 加载模型结构并加载权重
-    model = LogClassifier(input_dim=None)  # 暂时为 None
+    model = LogClassifier(input_dim=1714)  # 与之前的input_dim一致
     model.load_state_dict(torch.load(args.model, map_location=device))
     model.eval()
 
@@ -30,6 +41,12 @@ def main():
 
     # 读取推理数据
     df = pd.read_csv(args.data)
+
+    # ✂️ 只保留模型需要的列（丢弃多余字段）
+    required_fields = encoder.feature_names_in_ if hasattr(encoder, 'feature_names_in_') else ['oracle_name',
+                                                                                               'sut.component',                                                                         'sut.component_set',
+                                                                                               'sut.module']
+    df = df[required_fields]
 
     # 特征处理：保持与训练时相同的列顺序
     X_encoded = encoder.transform(df)
