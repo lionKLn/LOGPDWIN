@@ -3,6 +3,7 @@
 本项目提供了一个基于 **PyTorch + CodeBERT + OneHotEncoder** 的推理脚本 `infer.py`，可对华为动态日志进行二分类预测，并输出预测标签及对应概率。
 
 ## 目录结构
+```
 .
 ├── infer.py # 推理脚本
 ├── encoder.pkl # 训练时保存的 OneHotEncoder 对象
@@ -10,6 +11,7 @@
 ├── log_classifier.pt # 训练好的分类器模型权重
 ├── codebert/ # CodeBERT 模型目录（需提前下载）
 └── new_data.csv # 待推理的日志数据（CSV 格式）
+```
 
 ## 环境要求
 
