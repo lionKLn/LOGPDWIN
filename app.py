@@ -2,13 +2,12 @@ import pandas as pd
 import torch
 import numpy as np
 import joblib
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, Body
 from fastapi.responses import FileResponse
 from infer import process_features_infer, LogClassifier
 import tempfile
-import os
 
-app = FastAPI(title="Huawei Log Inference Service")
+app = FastAPI(title="Huawei Log Inference Service (JSON input)")
 
 # -----------------------------
 # 设备 & 模型预加载
@@ -18,7 +17,7 @@ device = torch.device("cpu")
 encoder = joblib.load("encoder.pkl")
 encoder_columns = np.load("encoder_columns.npy", allow_pickle=True)
 
-# 初始化模型
+# 初始化模型（先占位一个输入维度）
 dummy_input = np.zeros((1, len(encoder_columns) + 768*2))  # onehot + api_ut + tags
 input_dim = dummy_input.shape[1]
 model = LogClassifier(input_dim)
@@ -27,12 +26,45 @@ model.to(device)
 model.eval()
 
 # -----------------------------
-# 接口定义
+# 接口定义：接收 JSON -> 输出 CSV
 # -----------------------------
-@app.post("/infer")
-async def infer(file: UploadFile = File(...)):
-    # 读取上传的 CSV
-    df = pd.read_csv(file.file)
+@app.post("/api/predict")
+async def infer_json(payload: list = Body(...)):
+    """
+    输入：JSON 数组
+    [
+      {
+        "pipeline_id": "",
+        "case_id": "",
+        "test_data_id": "",
+        "api_ui": "",
+        "oracle_name": "",
+        "tags": ["ais","oracleAsian","ais_zone"],
+        "error_id": "",
+        "error_id_old": "",
+        "component": "",
+        "module": ""
+      }
+    ]
+    输出：推理后的 CSV 文件
+    """
+
+    # 转换 JSON 为 DataFrame
+    df = pd.DataFrame(payload)
+
+    # 字段映射：和训练时保持一致
+    df = df.rename(columns={
+        "api_ui": "api_ut",
+        "component": "sut.component",
+        "module": "sut.module"
+    })
+
+    # 处理 tags（拼接成字符串供编码）
+    df["tags"] = df["tags"].apply(lambda x: " ".join(x) if isinstance(x, list) else str(x))
+
+    # 补齐缺失字段
+    if "sut.component_set" not in df.columns:
+        df["sut.component_set"] = ""
 
     # 特征处理
     X = process_features_infer(df, encoder, encoder_columns, device)
@@ -44,12 +76,13 @@ async def infer(file: UploadFile = File(...)):
         probs = torch.softmax(outputs, dim=1).cpu().numpy()
         preds = np.argmax(probs, axis=1)
 
-    # 保存结果到临时文件
+    # 结果 DataFrame：包含输入的原始字段 + 推理结果
     result_df = df.copy()
     result_df["predicted_label"] = preds
     result_df["prob_class_0"] = probs[:, 0]
     result_df["prob_class_1"] = probs[:, 1]
 
+    # 临时文件返回 CSV
     tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
     result_df.to_csv(tmp_file.name, index=False)
 
