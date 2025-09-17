@@ -3,11 +3,9 @@ import torch
 import numpy as np
 import joblib
 from fastapi import FastAPI, Body
-from fastapi.responses import FileResponse
 from infer import process_features_infer, LogClassifier
-import tempfile
 
-app = FastAPI(title="Huawei Log Inference Service (JSON input)")
+app = FastAPI(title="Huawei Log Inference Service (JSON output)")
 
 # -----------------------------
 # 设备 & 模型预加载
@@ -26,7 +24,7 @@ model.to(device)
 model.eval()
 
 # -----------------------------
-# 接口定义：接收 JSON -> 输出 CSV
+# 接口定义：接收 JSON -> 输出 JSON
 # -----------------------------
 @app.post("/api/predict")
 async def infer_json(payload: list = Body(...)):
@@ -46,9 +44,8 @@ async def infer_json(payload: list = Body(...)):
         "module": ""
       }
     ]
-    输出：推理后的 CSV 文件
+    输出：每条数据增加预测结果字段
     """
-
     # 转换 JSON 为 DataFrame
     df = pd.DataFrame(payload)
 
@@ -76,18 +73,13 @@ async def infer_json(payload: list = Body(...)):
         probs = torch.softmax(outputs, dim=1).cpu().numpy()
         preds = np.argmax(probs, axis=1)
 
-    # 结果 DataFrame：包含输入的原始字段 + 推理结果
-    result_df = df.copy()
-    result_df["predicted_label"] = preds
-    result_df["prob_class_0"] = probs[:, 0]
-    result_df["prob_class_1"] = probs[:, 1]
+    # 添加预测结果到每条记录
+    result_list = []
+    for i, row in df.iterrows():
+        record = row.to_dict()
+        record["predicted_label"] = int(preds[i])
+        record["prob_class_0"] = float(probs[i, 0])
+        record["prob_class_1"] = float(probs[i, 1])
+        result_list.append(record)
 
-    # 临时文件返回 CSV
-    tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
-    result_df.to_csv(tmp_file.name, index=False)
-
-    return FileResponse(
-        tmp_file.name,
-        media_type="text/csv",
-        filename="inference_results.csv"
-    )
+    return result_list
