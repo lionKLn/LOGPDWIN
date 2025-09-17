@@ -70,3 +70,21 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 pip install fastapi uvicorn
 启动
 uvicorn service:app --host 0.0.0.0 --port 8000 --reload
+
+接口测试：
+curl -X POST "http://127.0.0.1:8000/api/predict" \
+-H "Content-Type: application/json" \
+-d '[
+  {
+    "pipeline_id": "p1",
+    "case_id": "c1",
+    "test_data_id": "t1",
+    "api_ui": "some api text",
+    "oracle_name": "oracle1",
+    "tags": ["ais","oracleAsian","ais_zone"],
+    "error_id": "err001",
+    "error_id_old": "err0001",
+    "component": "compA",
+    "module": "modX"
+  }
+]'
