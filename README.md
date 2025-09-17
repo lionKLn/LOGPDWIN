@@ -65,3 +65,8 @@ csv_path = "new_data.csv"
 device = torch.device("cpu")
 改为：
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+## 服务
+pip install fastapi uvicorn
+启动
+uvicorn service:app --host 0.0.0.0 --port 8000 --reload
