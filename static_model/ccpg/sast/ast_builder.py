@@ -1,3 +1,18 @@
+# 在 ast_builder.py 最顶部添加
+import sys
+import os
+
+# 获取当前文件（ast_builder.py）的绝对路径
+current_file_path = os.path.abspath(__file__)
+# 获取 sast 目录的路径（当前文件的父目录）
+sast_dir = os.path.dirname(current_file_path)
+# 获取项目根目录（sast 目录的父目录）
+project_root = os.path.dirname(sast_dir)
+# 将项目根目录加入 Python 搜索路径
+sys.path.append(project_root)
+
+
+
 import uuid
 import tree_sitter
 
