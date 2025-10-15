@@ -2,6 +2,7 @@ import os
 import torch
 from torch_geometric.loader import DataLoader
 import lightning.pytorch as pl
+from lightning.pytorch.callbacks import ModelCheckpoint
 
 # 导入NPU相关依赖（若未安装需先执行：pip install torch-npu）
 try:
@@ -74,6 +75,14 @@ def main():
     model.to(device)
     print(f"✅ 模型初始化完成，已加载到{device}设备")
 
+    checkpoint_callback = ModelCheckpoint(
+        monitor="train_loss",  # 监控指标
+        save_top_k=1,  # 保存最优的一个模型
+        mode="min",  # 越小越好
+        dirpath=os.path.join(checkpoint_dir, "best"),  # 保存目录
+        filename="gin-unsupervised-best",  # 文件名
+    )
+
     # 5. 训练器配置（适配NPU）
     trainer = pl.Trainer(
         max_epochs=max_epochs,
@@ -82,13 +91,7 @@ def main():
         log_every_n_steps=10,  # 每10步记录一次日志
         default_root_dir=checkpoint_dir,  # 权重和日志保存根目录
         enable_checkpointing=True,  # 开启权重保存
-        checkpoint_callback=pl.callbacks.ModelCheckpoint(
-            monitor="train_loss",  # 以训练损失为指标保存最优权重
-            save_top_k=1,  # 只保存最优的1个权重文件
-            mode="min",  # 损失越小越好
-            dirpath=os.path.join(checkpoint_dir, "best"),  # 最优权重保存目录
-            filename="gin-unsupervised-best"  # 权重文件名前缀
-        )
+        callbacks=[checkpoint_callback],  # ✅ 通过callbacks列表传入
     )
 
     # 6. 启动训练
