@@ -23,7 +23,8 @@ class GraphDataset(torch.utils.data.Dataset):
         return len(self.graph_files)
 
     def __getitem__(self, idx):
-        graph = torch.load(self.graph_files[idx])
+        # 关键修改：添加 map_location=cpu，强制将数据加载到CPU，规避HPU设备问题
+        graph = torch.load(self.graph_files[idx], map_location=torch.device('cpu'))
         if not hasattr(graph, "connected_node_mask"):
             # 添加 connected_node_mask，用于局部对比学习，默认标记所有节点为有效
             graph.connected_node_mask = torch.ones(graph.x.size(0), dtype=torch.bool)
