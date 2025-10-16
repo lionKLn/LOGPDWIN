@@ -1,61 +1,47 @@
 import os
-import pandas as pd
-from tqdm import tqdm
+import os.path as osp
 import torch
-import sys
-
-sys.path.append('..')
-
-from unsupervised_train.preprocess import process_sample  # 导入你之前写的函数
+from torch_geometric.data import Dataset
 
 
-def load_dataset_from_xlsx(xlsx_path: str):
+class GraphDataset(Dataset):
     """
-    从 .xlsx 文件中加载数据，提取 code_str 字段。
-    要求文件中至少有一列名为 'code_str'。
+    加载 ../data/graph_dataset 下的所有 .pt 图数据文件。
+    每个文件应是 torch.save() 存储的 PyG Data 对象。
     """
-    if not os.path.exists(xlsx_path):
-        raise FileNotFoundError(f"找不到文件: {xlsx_path}")
+    def __init__(self, root_dir="../data/graph_dataset", transform=None, pre_transform=None):
+        super().__init__(root=root_dir, transform=transform, pre_transform=pre_transform)
+        self.root_dir = osp.abspath(root_dir)
 
-    df = pd.read_excel(xlsx_path)
+        if not osp.exists(self.root_dir):
+            raise FileNotFoundError(f"❌ 路径不存在: {self.root_dir}")
 
-    if 'code_str' not in df.columns:
-        raise ValueError("Excel 文件中未找到 'code_str' 列，请确认列名正确。")
+        # 收集所有 .pt 文件路径
+        self.graph_paths = [
+            osp.join(self.root_dir, f)
+            for f in os.listdir(self.root_dir)
+            if f.endswith(".pt")
+        ]
+        if not self.graph_paths:
+            raise RuntimeError(f"⚠️ 没有找到任何 .pt 文件，请检查目录: {self.root_dir}")
 
-    dataset = []
-    for i, row in df.iterrows():
-        code_str = str(row['code_str']).strip()
-        if not code_str or code_str == 'nan':
-            continue
-        dataset.append({
-            "id": f"sample_{i}",
-            "code_str": code_str
-        })
-    print(f"✅ 成功加载 {len(dataset)} 个样本。")
-    return dataset
+        print(f"✅ 成功加载 {len(self.graph_paths)} 个图样本。")
 
+    def len(self):
+        """返回数据集大小"""
+        return len(self.graph_paths)
 
-def build_graph_dataset(xlsx_path: str, save_dir: str):
-    """
-    读取 xlsx 文件，批量处理样本生成图数据 (.pt 文件)
-    """
-    os.makedirs(save_dir, exist_ok=True)
-    dataset = load_dataset_from_xlsx(xlsx_path)
-
-    print(f"开始生成图数据集，保存路径：{save_dir}")
-    for idx, sample in enumerate(tqdm(dataset, desc="Processing samples")):
-        try:
-            process_sample(idx, save_dir, sample)
-        except Exception as e:
-            print(f"❌ 样本 {sample['id']} 处理失败: {e}")
-            continue
-
-    print("🎯 数据集预处理完成！")
+    def get(self, idx):
+        """返回第 idx 个样本（PyG Data 对象）"""
+        graph_path = self.graph_paths[idx]
+        data = torch.load(graph_path)
+        return data
 
 
 if __name__ == "__main__":
-    # 例子：使用时可通过命令行运行
-    xlsx_path = "../data/code_dataset.xlsx"  # 修改为你的文件路径
-    save_dir = "../data/graph_dataset"  # 输出图数据保存路径
+    dataset = GraphDataset("../data/graph_dataset")
+    print(f"数据集大小: {len(dataset)}")
 
-    build_graph_dataset(xlsx_path, save_dir)
+    # 查看一个样本结构
+    data = dataset.get(0)
+    print(data)

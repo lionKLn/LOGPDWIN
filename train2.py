@@ -20,7 +20,7 @@ try:
 except ImportError:
     npu_available = False
 
-device = torch.device("npu:6" if npu_available else "cuda:0" if torch.cuda.is_available() else "cpu")
+device = torch.device("npu:4" if npu_available else "cuda:0" if torch.cuda.is_available() else "cpu")
 if npu_available:
     torch.npu.set_device(0)
 

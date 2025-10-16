@@ -1,105 +1,161 @@
+import sys
+sys.path.append('../..')
 import os
+import time
 import torch
-from torch_geometric.loader import DataLoader
-import lightning.pytorch as pl
-from lightning.pytorch.callbacks import ModelCheckpoint
+import torch.nn as nn
+from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
 
-# 导入NPU相关依赖（若未安装需先执行：pip install torch-npu）
+# 优先导入NPU支持
 try:
     import torch_npu
+    npu_available = torch.npu.is_available()
 except ImportError:
-    raise ImportError("请先安装torch-npu以支持NPU设备，安装命令：pip install torch-npu")
+    npu_available = False
 
-from unsupervised_train.model import GAE_GIN_lightning
-from unsupervised_train.dataloader import GraphDataset
+from model import GAE_GIN_lightning as GAE_GIN
+from static_model.unsupervised_train.dataset import GraphDataset
+from static_model.unsupervised_train.data_loader import CPGDataLoader
 
 
-def main():
-    # 1. 基础配置
-    data_dir = "../data/graph_dataset"  # 图数据目录（.pt文件）
-    batch_size = 8  # 批大小
-    num_workers = 4  # 数据加载进程数
-    target_npu = "npu:6"  # 目标NPU卡号（可根据需求修改）
-    max_epochs = 20  # 训练轮次
-    checkpoint_dir = "./checkpoints"  # 权重保存目录
+class EarlyStopping:
+    """手动实现EarlyStopping逻辑"""
+    def __init__(self, patience=10, verbose=False, delta=0.0, path='checkpoint.pt'):
+        self.patience = patience
+        self.verbose = verbose
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        self.val_loss_min = float('inf')
+        self.delta = delta
+        self.path = path
 
-    # 2. 设备检测与配置
-    # 检查NPU是否可用，优先使用指定的NPU，否则降级到GPU/CPU
-    npu_available = torch.npu.is_available() and target_npu in [f"npu:{i}" for i in range(torch.npu.device_count())]
-    if npu_available:
-        device = torch.device(target_npu)
-        accelerator = "npu"
-        devices = [int(target_npu.split(":")[-1])]  # Lightning需要传入卡号列表
-        print(f"✅ 检测到可用NPU设备：{target_npu}，将使用该设备训练")
-    else:
-        # 若NPU不可用，降级到GPU/CPU
-        if torch.cuda.is_available():
-            device = torch.device("cuda:0")
-            accelerator = "gpu"
-            devices = [0]
-            print(f"⚠️ 指定的NPU设备{target_npu}不可用，降级使用GPU:0")
+    def __call__(self, val_loss, model):
+        score = -val_loss
+        if self.best_score is None:
+            self.best_score = score
+            self.save_checkpoint(val_loss, model)
+        elif score < self.best_score + self.delta:
+            self.counter += 1
+            if self.verbose:
+                print(f"EarlyStopping counter: {self.counter} / {self.patience}")
+            if self.counter >= self.patience:
+                self.early_stop = True
         else:
-            device = torch.device("cpu")
-            accelerator = "cpu"
-            devices = "auto"
-            print(f"⚠️ NPU和GPU均不可用，使用CPU训练（训练速度可能较慢）")
+            self.best_score = score
+            self.save_checkpoint(val_loss, model)
+            self.counter = 0
 
-    # 设置默认设备（确保数据和模型都加载到指定设备）
-    torch.npu.set_device(device) if npu_available else None
-
-    # 3. 数据加载
-    # 加载图数据集，自动读取目录下所有.pt文件
-    train_dataset = GraphDataset(data_dir)
-    # 构建DataLoader，批量加载数据（shuffle=True打乱训练数据）
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=True  # 开启内存锁定，加速数据传输到NPU/GPU
-    )
-    print(f"✅ 成功加载数据集：共{len(train_dataset)}个图样本，批大小={batch_size}")
-
-    # 4. 模型初始化（关键：in_channels需与data.x维度一致）
-    # 若data.x是CodeBERT编码（768维），需将in_channels改为768；若为其他维度则对应修改
-    model = GAE_GIN_lightning(
-        in_channels=768,  # 重点：必须与data.x的维度一致（原代码128需根据实际数据修改）
-        out_channels=768,  # 保留接口兼容性，无实际作用
-        batch_size=batch_size,
-        encoder_kwargs={
-            "num_gc_layers": 2,  # GIN层数（可调整）
-            "hidden_dim": 128  # GIN每层输出维度（可调整）
-        }
-    )
-    # 将模型移动到指定设备
-    model.to(device)
-    print(f"✅ 模型初始化完成，已加载到{device}设备")
-
-    checkpoint_callback = ModelCheckpoint(
-        monitor="train_loss",  # 监控指标
-        save_top_k=1,  # 保存最优的一个模型
-        mode="min",  # 越小越好
-        dirpath=os.path.join(checkpoint_dir, "best"),  # 保存目录
-        filename="gin-unsupervised-best",  # 文件名
-    )
-
-    # 5. 训练器配置（适配NPU）
-    trainer = pl.Trainer(
-        max_epochs=max_epochs,
-        accelerator=accelerator,  # 设备类型：npu/gpu/cpu
-        devices=devices,  # 具体设备号：NPU/GPU卡号列表，CPU设为auto
-        log_every_n_steps=10,  # 每10步记录一次日志
-        default_root_dir=checkpoint_dir,  # 权重和日志保存根目录
-        enable_checkpointing=True,  # 开启权重保存
-        callbacks=[checkpoint_callback],  # ✅ 通过callbacks列表传入
-    )
-
-    # 6. 启动训练
-    print("🚀 开始无监督训练...")
-    print(f"📊 训练配置：设备={device}，轮次={max_epochs}，批大小={batch_size}")
-    trainer.fit(model, train_loader)
-    print("🎯 训练完成！最优权重已保存到：", os.path.join(checkpoint_dir, "best"))
+    def save_checkpoint(self, val_loss, model):
+        """保存当前最优模型"""
+        if self.verbose:
+            print(f"Validation loss decreased ({self.val_loss_min:.6f} → {val_loss:.6f}). Saving model ...")
+        torch.save(model.state_dict(), self.path)
+        self.val_loss_min = val_loss
 
 
+class Trainer_Wrapper:
+    def __init__(self, graph_type, npu_device_id=0):
+        self.graph_type = graph_type
+        self.npu_device_id = npu_device_id  # NPU设备ID，默认为0
+
+        # === 设备设置（优先NPU，其次GPU，最后CPU） ===
+        if npu_available:
+            self.device = torch.device(f"npu:{npu_device_id}")
+            torch.npu.set_device(self.device)  # 设置当前使用的NPU设备
+        elif torch.cuda.is_available():
+            self.device = torch.device("cuda:0")
+        else:
+            self.device = torch.device("cpu")
+
+        # === 日志设置 ===
+        run_name = time.strftime('%Y-%m-%d_%H-%M-%S', time.localtime(time.time()))
+        self.log_dir = f'logs/{graph_type}/{run_name}'
+        os.makedirs(self.log_dir, exist_ok=True)
+        self.writer = SummaryWriter(self.log_dir)
+
+        # === 模型初始化 ===
+        self.model = GAE_GIN(768, 768, batch_size=512).to(self.device)
+
+        # === 优化器 ===
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=5e-5)
+
+        # === 数据加载 ===
+        dataset = GraphDataset(projects=['nginx'])
+        train_data = dataset[: int(0.7 * len(dataset))]
+        test_data = dataset[int(0.7 * len(dataset)) :]
+
+        self.train_loader = CPGDataLoader(
+            train_data, batch_size=512, graph_type=graph_type, shuffle=True, num_workers=8
+        )
+        self.test_loader = CPGDataLoader(
+            test_data, batch_size=512, graph_type=graph_type, shuffle=False, num_workers=8
+        )
+
+        # === 提前停止 ===
+        self.early_stopping = EarlyStopping(
+            patience=10,
+            verbose=True,
+            path=os.path.join(self.log_dir, f"best_{graph_type}.pt")
+        )
+
+        print(f"Trainer initialized on {self.device} with log_dir={self.log_dir}")
+
+    def train_one_epoch(self, epoch):
+        """单个epoch的训练逻辑"""
+        self.model.train()
+        total_loss = 0
+        loop = tqdm(self.train_loader, desc=f"Epoch {epoch} [Train]", leave=False)
+
+        for batch in loop:
+            self.optimizer.zero_grad()
+            # 将数据移至指定设备（支持NPU/GPU/CPU）
+            batch = batch[self.graph_type].to(self.device)
+            loss = self.model.training_step(batch, batch_idx=0)
+            loss.backward()
+            self.optimizer.step()
+
+            total_loss += loss.item()
+            loop.set_postfix(loss=loss.item())
+
+        avg_loss = total_loss / len(self.train_loader)
+        self.writer.add_scalar("Loss/train", avg_loss, epoch)
+        return avg_loss
+
+    def validate(self, epoch):
+        """验证逻辑"""
+        self.model.eval()
+        total_val_loss = 0
+        with torch.no_grad():
+            for batch in tqdm(self.test_loader, desc=f"Epoch {epoch} [Val]", leave=False):
+                # 将数据移至指定设备（支持NPU/GPU/CPU）
+                batch = batch[self.graph_type].to(self.device)
+                val_loss = self.model.validation_step(batch, batch_idx=0)
+                total_val_loss += val_loss.item()
+
+        avg_val_loss = total_val_loss / len(self.test_loader)
+        self.writer.add_scalar("Loss/val", avg_val_loss, epoch)
+        return avg_val_loss
+
+    def train(self, max_epochs=200):
+        print("Start training ...")
+        for epoch in range(1, max_epochs + 1):
+            train_loss = self.train_one_epoch(epoch)
+            val_loss = self.validate(epoch)
+
+            print(f"Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+            self.early_stopping(val_loss, self.model)
+            if self.early_stopping.early_stop:
+                print("Early stopping triggered.")
+                break
+
+        print("Training finished.")
+        self.writer.close()
+
+
+# 使用示例
 if __name__ == "__main__":
-    main()
+    # 可指定使用的NPU设备ID（默认为0）
+    trainer = Trainer_Wrapper(graph_type='pdg', npu_device_id=4)
+    trainer.train(max_epochs=200)
