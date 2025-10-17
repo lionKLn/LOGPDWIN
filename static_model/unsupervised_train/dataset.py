@@ -34,7 +34,8 @@ class GraphDataset(Dataset):
     def get(self, idx):
         """返回第 idx 个样本（PyG Data 对象）"""
         graph_path = self.graph_paths[idx]
-        data = torch.load(graph_path)
+        # 关键修改：强制将数据加载到CPU，避免设备依赖问题
+        data = torch.load(graph_path, map_location=torch.device('cpu'))
         return data
 
 
