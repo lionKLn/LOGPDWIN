@@ -116,8 +116,8 @@ class Trainer_Wrapper:
             loss.backward()
             self.optimizer.step()
 
-            total_loss += loss.item()
-            loop.set_postfix(loss=loss.item())
+            total_loss += loss
+            loop.set_postfix(loss=loss)
 
         avg_loss = total_loss / len(self.train_loader)
         self.writer.add_scalar("Loss/train", avg_loss, epoch)

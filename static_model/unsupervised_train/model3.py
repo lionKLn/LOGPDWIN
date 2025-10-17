@@ -5,14 +5,14 @@
 使用 GINConv 作为编码器，训练目标是使图的局部节点表示与图的全局表示一致（对比学习）。
 
 仅支持一种节点输入方式：
-1) 已有节点向量 data.x（直接使用预处理好的节点特征）
+1) 已有节点向量 data.embedding（直接使用预处理好的节点特征）
 
 主要类：
-- GINEncoder: 图编码器（仅支持直接使用 data.x）
+- GINEncoder: 图编码器（仅支持直接使用 data.embedding）
 - GAE_GIN: 纯 PyTorch 封装训练 / 验证 / 对比损失等（替代原 Lightning 类）
 
 如何使用（简要）：
-1. 确保预处理已在 .pt 中存储了 data.x（节点向量）
+1. 确保预处理已在 .pt 中存储了 data.embedding（节点向量）
 2. 初始化 GAE_GIN 时传入 in_channels=节点特征维度、设备（如 'npu:0' 或 'cuda:0'）
 3. 准备 PyG DataLoader（每个 batch 的 Data 必须包含 x, edge_index, batch, connected_node_mask）
 4. 调用 train_loop 方法启动训练，调用 validate 方法进行验证
@@ -54,7 +54,7 @@ class GINEncoder(nn.Module):
     GIN-based encoder（仅支持直接使用预处理节点特征）
 
     仅支持一种输入模式：
-    - 必须传入 in_channels (int > 0)，且输入数据需包含 data.x（预处理好的节点特征）
+    - 必须传入 in_channels (int > 0)，且输入数据需包含 data.embedding（预处理好的节点特征）
 
     参数:
     - in_channels: 预处理节点特征的维度
@@ -100,7 +100,7 @@ class GINEncoder(nn.Module):
     def forward(self, x, edge_index, batch, connected_node_mask):
         """
         前向传播：
-        - x: 预处理好的节点特征（data.x）
+        - x: 预处理好的节点特征（data.embedding）
         - edge_index, batch: PyG 标准参数
         - connected_node_mask: Bool/Byte Tensor，标记有效节点
         返回：
@@ -109,7 +109,7 @@ class GINEncoder(nn.Module):
         """
         # 校验输入
         if x is None:
-            raise ValueError("必须传入预处理好的节点特征 x（即 data.x）")
+            raise ValueError("必须传入预处理好的节点特征 x（即 data.embedding）")
 
         xs = []
         # 执行GIN层计算，收集各层输出
@@ -166,7 +166,7 @@ class GAE_GIN(nn.Module):
     def _prepare_data(self, data: Batch) -> Batch:
         """将数据移动到指定设备（替代 Lightning 的自动设备分配）"""
         # 提取必要字段并移动设备
-        data.x = data.x.to(self.device)
+        data.embedding = data.embedding.to(self.device)
         data.edge_index = data.edge_index.to(self.device)
         data.batch = data.batch.to(self.device)
         # 处理可选的 connected_node_mask
@@ -185,7 +185,7 @@ class GAE_GIN(nn.Module):
 
         # 编码得到全局和局部向量
         global_vector, local_vector = self.encoder(
-            x=data.x,
+            x=data.embedding,
             edge_index=data.edge_index,
             batch=data.batch,
             connected_node_mask=getattr(data, 'connected_node_mask', None)
