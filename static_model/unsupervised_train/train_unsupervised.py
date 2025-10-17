@@ -112,7 +112,7 @@ class Trainer_Wrapper:
             self.optimizer.zero_grad()
             # 将数据移至指定设备（支持NPU/GPU/CPU）
             batch = batch[self.graph_type].to(self.device)
-            loss = self.model.training_step(batch, batch_idx=0)
+            loss = self.model.train_step(batch, batch_idx=0)
             loss.backward()
             self.optimizer.step()
 
