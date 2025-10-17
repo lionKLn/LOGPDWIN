@@ -24,12 +24,22 @@ def load_dataset_from_xlsx(xlsx_path: str):
 
     dataset = []
     for i, row in df.iterrows():
-        code_str = str(row['code_str']).strip()
-        if not code_str or code_str == 'nan':
+        raw_code = str(row['code_str']).strip()
+        if not raw_code or raw_code == 'nan':
             continue
+        # ---------------------- 修正后的处理逻辑 ----------------------
+        if raw_code.startswith('('):
+            # 情况1：以"("开头 → 不处理
+            processed_code = raw_code
+        elif raw_code.startswith('{'):
+            # 情况2：以"{"开头 → 在最开始加"()"（不包裹原有内容）
+            processed_code = f"(){raw_code}"  # 核心修正：()直接加在前面
+        else:
+            # 情况3：其他开头 → 先套"{}"，再在最前面加"()"
+            processed_code = f"(){{{raw_code}}}"  # 先加{}，再在最前加()
         dataset.append({
             "id": f"sample_{i}",
-            "code_str": code_str
+            "code_str": processed_code
         })
     print(f"✅ 成功加载 {len(dataset)} 个样本。")
     return dataset
