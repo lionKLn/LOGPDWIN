@@ -76,13 +76,13 @@ class Trainer_Wrapper:
         self.writer = SummaryWriter(self.log_dir)
 
         # === 模型初始化 ===
-        self.model = GAE_GIN(768, 768).to(self.device)
+        self.model = GAE_GIN(768, 768, device="npu:4").to(self.device)
 
         # === 优化器 ===
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=5e-5)
 
         # === 数据加载 ===
-        dataset = GraphDataset(projects=['nginx'])
+        dataset = GraphDataset("../data/graph_data")
         train_data = dataset[: int(0.7 * len(dataset))]
         test_data = dataset[int(0.7 * len(dataset)) :]
 
