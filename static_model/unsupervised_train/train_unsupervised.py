@@ -113,8 +113,9 @@ class Trainer_Wrapper:
             # 将数据移至指定设备（支持NPU/GPU/CPU）
             batch = batch[self.graph_type].to(self.device)
             loss = self.model.train_step(batch, self.optimizer)
-            loss.backward()
-            self.optimizer.step()
+            # loss只是损失的标量值
+            # loss.backward()
+            # self.optimizer.step()
 
             total_loss += loss
             loop.set_postfix(loss=loss)
@@ -131,8 +132,9 @@ class Trainer_Wrapper:
             for batch in tqdm(self.test_loader, desc=f"Epoch {epoch} [Val]", leave=False):
                 # 将数据移至指定设备（支持NPU/GPU/CPU）
                 batch = batch[self.graph_type].to(self.device)
-                val_loss = self.model.validation_step(batch, batch_idx=0)
-                total_val_loss += val_loss.item()
+                # val_loss只是损失的标量值
+                val_loss = self.model.validate_step(batch)
+                total_val_loss += val_loss
 
         avg_val_loss = total_val_loss / len(self.test_loader)
         self.writer.add_scalar("Loss/val", avg_val_loss, epoch)
