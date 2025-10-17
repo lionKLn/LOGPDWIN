@@ -14,7 +14,7 @@ try:
 except ImportError:
     npu_available = False
 
-from model import GAE_GIN_lightning as GAE_GIN
+from model import GAE_GIN
 from static_model.unsupervised_train.dataset import GraphDataset
 from static_model.unsupervised_train.data_loader import CPGDataLoader
 
@@ -76,7 +76,7 @@ class Trainer_Wrapper:
         self.writer = SummaryWriter(self.log_dir)
 
         # === 模型初始化 ===
-        self.model = GAE_GIN(768, 768, batch_size=512).to(self.device)
+        self.model = GAE_GIN(768, 768).to(self.device)
 
         # === 优化器 ===
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=5e-5)
