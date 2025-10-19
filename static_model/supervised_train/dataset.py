@@ -1,66 +1,49 @@
-import pandas as pd
-import numpy as np
-import torch
+import os
 import json
-
-os
-import io
-from pathlib import Path
-from torch_geometric.data import Data
-from torch_geometric.utils.convert import from_networkx
+import pandas as pd
+import torch
+from tqdm import tqdm
 from sentence_transformers import SentenceTransformer
-from transformers import RobertaTokenizer, RobertaModel
-
-# 导入preprocess相关模块（你的CPG生成代码）
-from ccpg.sast.src_parser import c_parser_from_serial_code
-from ccpg.sast.fun_unit import FunUnit
-from ccpg.cpg.ast_constructor import gen_ast_cpg
-from ccpg.cpg.cfg_constructor import cfg_build
-from ccpg.cpg.ddg_constructor import ddg_build
-from ccpg.cpg.cpg_node import CPGNode
-
-# 导入模型模块
-from unsupervised_train.model import GAE_GIN_lightning
+from torch_geometric.data import Batch  # 新增：用于合并内存中的图数据
+# 导入内存版代码图生成函数（替换原process_sample）
+from unsupervised_train.preprocess import generate_graph_in_memory  # 关键替换：内存版函数
+from model import GAE_GIN  # 无监督训练的图编码模型
 
 # ----------------------------
-# 配置与初始化
+# 配置参数（删除GRAPH_SAVE_DIR，无需临时目录）
 # ----------------------------
-# 设备配置
-device = torch.device("npu:6" if torch.npu.is_available() else
-                      "cuda:0" if torch.cuda.is_available() else "cpu")
-
-# 模型路径（训练好的InfoGraph模型）
-MODEL_CHECKPOINT = "./checkpoints/best/gin-unsupervised-best.ckpt"
-
-# 输入输出文件
-INPUT_EXCEL = "your_file.xlsx"
-OUTPUT_EXCEL = "final_processed_data.xlsx"
-CODE_EMBEDDINGS_NPY = "code_str_embeddings.npy"
-
-# 创建输出目录
-Path("embeddings").mkdir(exist_ok=True)
-# 创建CPG临时目录（避免重复生成，可选）
-Path("./temp_cpg").mkdir(exist_ok=True)
-
-# 初始化CodeBERT（与preprocess代码一致，用于节点编码）
-tokenizer = RobertaTokenizer.from_pretrained("microsoft/codebert-base")
-codebert_model = RobertaModel.from_pretrained("microsoft/codebert-base")
-codebert_model.eval()
+INPUT_EXCEL = "path/to/your/input.xlsx"  # 原始Excel路径
+UNSUPERVISED_MODEL_PATH = "logs/pdg/2025-05-20_14-30-00/best_pdg.pt"  # 无监督模型路径
+DEVICE = torch.device("npu:4" if torch.npu.is_available() else "cpu")  # 设备
+EMBEDDING_DIM = 256  # 无监督模型输出的嵌入维度（需与模型一致）
 
 # ----------------------------
-# 1. 加载数据与预处理
+# 1. 加载数据与预处理（解析JSON）
 # ----------------------------
 # 读取原始Excel
 df = pd.read_excel(INPUT_EXCEL)
 
-# 提取JSON字段
+# 提取JSON字段并处理code_str（逻辑不变）
 results = []
 for i, row in df.iterrows():
     try:
         data = json.loads(row["Data"])
+        # 原始code_str提取
+        raw_code = str(data.get("code_str", "")).strip()
+
+        # ---------------------- code_str预处理（复用之前的规则） ----------------------
+        if raw_code.startswith('('):
+            processed_code = raw_code  # 以"("开头：不处理
+        elif raw_code.startswith('{'):
+            processed_code = f"(){raw_code}"  # 以"{"开头：最前面加"()"
+        else:
+            processed_code = f"(){{{raw_code}}}"  # 其他开头：先套"{}"再在最前加"()"
+        # --------------------------------------------------------------------------
+
         results.append({
             "component": data.get("component", ""),
-            "code_str": data.get("code_str", ""),
+            "code_str": processed_code,  # 存储预处理后的code_str
+            "raw_code": raw_code,  # 保留原始code_str用于追溯
             "Desc": data.get("Desc", ""),
             "Func": data.get("Func", ""),
             "case_id": data.get("case_id", ""),
@@ -71,18 +54,87 @@ for i, row in df.iterrows():
     except Exception as e:
         print(f"第 {i} 行JSON解析失败: {e}")
         results.append({
-            "component": "", "code_str": "", "Desc": "",
-            "Func": "", "case_id": "", "test_suite": "",
+            "component": "", "code_str": "", "raw_code": "",
+            "Desc": "", "Func": "", "case_id": "", "test_suite": "",
             "case_space": "", "case_purpose": ""
         })
 
+# 合并原始数据与解析结果
 new_df = pd.DataFrame(results)
 merged_df = pd.concat([df, new_df], axis=1)
 
 # ----------------------------
-# 2. 其他字段编码（复用原有逻辑）
+# 2. code_str处理：内存生成代码图→直接编码（核心修改）
 # ----------------------------
-# Sentence-BERT编码
+# 2.1 内存批量生成代码图（不保存文件）
+print("内存中生成code_str的代码图...")
+graph_list = []  # 存储所有内存中的PyG Data对象（与merged_df行对齐）
+for idx, row in tqdm(merged_df.iterrows(), total=len(merged_df), desc="生成代码图"):
+    processed_code = row["code_str"]
+    if not processed_code:  # 跳过空code_str
+        graph_list.append(None)
+        continue
+
+    # 调用内存版函数，直接返回torch_graph（PyG Data对象）
+    # func_name用idx确保唯一，避免解析冲突
+    torch_graph = generate_graph_in_memory(
+        code_str=processed_code,
+        func_name=f"func_{idx}"
+    )
+    graph_list.append(torch_graph)  # 存入列表，后续直接使用
+
+# 2.2 加载无监督模型（逻辑不变）
+print("加载无监督图编码模型...")
+graph_model = GAE_GIN(
+    in_channels=768,  # 节点特征维度（CodeBERT编码维度）
+    out_channels=768,
+    device=DEVICE
+).to(DEVICE)
+graph_model.load_state_dict(torch.load(UNSUPERVISED_MODEL_PATH, map_location=DEVICE))
+graph_model.eval()  # 切换到评估模式
+
+# 2.3 内存批量编码代码图（无文件读取）
+print("编码内存中的代码图...")
+code_embeddings = []
+batch_size = 32  # 按批次处理，避免内存溢出
+
+with torch.no_grad():  # 禁用梯度计算，节省内存
+    # 按批次遍历graph_list
+    for batch_start in tqdm(range(0, len(graph_list), batch_size), desc="编码代码图"):
+        # 取当前批次的图列表
+        batch_graphs = graph_list[batch_start:batch_start + batch_size]
+
+        # 1. 分离有效图（torch_graph非None）和无效图（None）
+        valid_graphs = []  # 存储有效PyG Data对象
+        valid_indices = []  # 有效图在当前批次的索引
+        for idx_in_batch, g in enumerate(batch_graphs):
+            if g is not None:
+                valid_graphs.append(g)
+                valid_indices.append(idx_in_batch)
+
+        # 2. 对有效图进行批量编码
+        batch_emb = [torch.zeros(EMBEDDING_DIM, device=DEVICE) for _ in batch_graphs]  # 初始化批次嵌入
+        if valid_graphs:
+            # 合并有效图为PyG Batch对象（内存中直接合并）
+            batch = Batch.from_data_list(valid_graphs).to(DEVICE)
+            # 调用模型编码，得到图嵌入
+            valid_embs = graph_model.forward(batch, mode="predict")  # 形状：[有效图数量, EMBEDDING_DIM]
+
+            # 将有效嵌入赋值到对应位置
+            for idx_in_batch, emb in zip(valid_indices, valid_embs):
+                batch_emb[idx_in_batch] = emb
+
+        # 3. 将当前批次嵌入移到CPU并转为列表（便于后续存入DataFrame）
+        batch_emb_cpu = [emb.cpu().tolist() for emb in batch_emb]
+        code_embeddings.extend(batch_emb_cpu)
+
+# 将编码结果存入merged_df（与行严格对齐）
+merged_df["code_embedding"] = code_embeddings
+
+# ----------------------------
+# 3. 其他字段编码（复用原有逻辑，无修改）
+# ----------------------------
+# Sentence-BERT编码文本字段
 text_model = SentenceTransformer("./models/paraphrase-multilingual-MiniLM-L12-v2")
 
 
@@ -90,177 +142,54 @@ def encode_texts(texts):
     return text_model.encode([str(x) if x is not None else "" for x in texts], show_progress_bar=True)
 
 
-# 文本字段编码
 for col in ["Desc", "Func", "case_space", "case_purpose"]:
     embeddings = encode_texts(merged_df[col].fillna("").tolist())
     merged_df[col + "_embedding"] = [emb.tolist() for emb in embeddings]
 
-# One-hot编码
+# One-hot编码类别字段
 component_onehot = pd.get_dummies(merged_df["component"], prefix="component")
 case_id_onehot = pd.get_dummies(merged_df["case_id"], prefix="case_id")
 test_suite_onehot = pd.get_dummies(merged_df["test_suite"], prefix="test_suite")
 rule_onehot = pd.get_dummies(merged_df["rule"], prefix="rule")
 
-# 标签处理
-merged_df["false_positive"] = merged_df["status"]
-
-
 # ----------------------------
-# 3. code_str编码（核心：调用preprocess代码生成CPG）
+# 4. 标签处理（复用原有逻辑，无修改）
 # ----------------------------
-class CodeEncoder:
-    def __init__(self, checkpoint_path, device):
-        # 加载训练好的GIN模型
-        self.model = GAE_GIN_lightning.load_from_checkpoint(checkpoint_path)
-        self.model.to(device)
-        self.model.eval()  # 评估模式，关闭 dropout 等
-        self.device = device
-        self.embedding_dim = self.model.embedding_dimension
-
-    def _preprocess_code_to_cpg(self, code_str, sample_idx):
-        """
-        调用preprocess代码，将code_str转为PyG格式的CPG图
-        完全复用process_sample的核心逻辑，不保存临时文件，直接返回图对象
-        """
-        # 1. 代码解析（与preprocess一致）
-        func_name = f"func_{sample_idx}"  # 用样本索引避免函数名重复
-        bytes_content = code_str.encode("utf-8")
-
-        try:
-            # 解析代码生成函数列表
-            func_list = c_parser_from_serial_code(func_name, bytes_content)
-            if len(func_list) < 1:
-                raise ValueError(f"函数解析为空，样本索引: {sample_idx}")
-
-            # 提取函数单元，生成CPG（AST+CFG+DDG）
-            func: FunUnit = func_list[0]
-            func_root = func.sast.root
-            func_cpg = gen_ast_cpg(func.sast)  # 生成AST
-            _, _ = cfg_build(func_cpg, func_root)  # 构建CFG
-            ddg_build(func_cpg, func_root)  # 构建DDG
-
-            # 2. 节点CodeBERT编码（与preprocess一致）
-            for node_id, attrs in func_cpg.nodes(data=True):
-                node: CPGNode = attrs['cpg_node']
-                # 清理节点类型和token（避免特殊字符影响编码）
-                node_type = node.node_type.strip('\n').replace(',', ' ')
-                node_token = node.node_token.strip('\n').replace(',', ' ')
-
-                # CodeBERT编码
-                text = f"{node_type} {node_token}"
-                inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=64)
-                with torch.no_grad():
-                    outputs = codebert_model(**inputs)
-                # 取最后一层隐藏状态的均值作为节点特征
-                node_emb = outputs.last_hidden_state.mean(dim=1).squeeze(0)
-
-                attrs['embedding'] = node_emb  # 存储节点特征
-                del attrs['cpg_node']  # 删除冗余的CPGNode对象
-
-            # 3. 边属性处理（与preprocess一致）
-            for u, v, attrs in func_cpg.edges(data=True):
-                edge_type = attrs['edge_type']
-                # 标记边属于AST/CFG/DDG
-                attrs['ast'] = edge_type[0] == '1'
-                attrs['cfg'] = edge_type[1] == '1'
-                attrs['ddg'] = edge_type[2] == '1'
-                del attrs['edge_type']  # 删除原始边类型字段
-
-            # 4. 转为PyG的Data格式
-            torch_graph = from_networkx(func_cpg)
-            # 补充model需要的字段（与DataLoader逻辑一致）
-            if not hasattr(torch_graph, "connected_node_mask"):
-                torch_graph.connected_node_mask = torch.ones(torch_graph.num_nodes, dtype=torch.bool)
-            # 节点特征赋值给x（model默认读取x作为节点特征）
-            torch_graph.x = torch.stack([attrs['embedding'] for _, attrs in func_cpg.nodes(data=True)])
-
-            return torch_graph
-
-        except Exception as e:
-            print(f"CPG生成失败（样本索引: {sample_idx}）: {str(e)}")
-            return None
-
-    def encode_code(self, code_str, sample_idx):
-        """
-        完整编码流程：code_str → CPG → GIN编码 → 图向量
-        sample_idx: 样本索引，用于定位错误和生成唯一函数名
-        """
-        # 空代码返回零向量
-        if not code_str or str(code_str).strip() == "":
-            return np.zeros(self.embedding_dim)
-
-        try:
-            # 步骤1：生成CPG图
-            cpg_graph = self._preprocess_code_to_cpg(code_str, sample_idx)
-            if cpg_graph is None:
-                return np.zeros(self.embedding_dim)
-
-            # 步骤2：GIN模型编码
-            # 移动图数据到设备
-            cpg_graph = cpg_graph.to(self.device)
-            # 补充batch字段（单图场景，所有节点属于同一图）
-            cpg_graph.batch = torch.zeros(cpg_graph.num_nodes, dtype=torch.long, device=self.device)
-
-            with torch.no_grad():  # 关闭梯度，加速推理
-                # 调用model的forward，获取图级向量（mode="predict"只返回全局向量）
-                code_embedding = self.model(cpg_graph, mode="predict")
-
-            # 转为numpy数组返回
-            return code_embedding.cpu().numpy().flatten()
-
-        except Exception as e:
-            print(f"代码编码失败（样本索引: {sample_idx}）: {str(e)}")
-            return np.zeros(self.embedding_dim)
-
-
-# 初始化编码器
-code_encoder = CodeEncoder(MODEL_CHECKPOINT, device)
-
-# 批量编码所有code_str（带索引，方便定位错误）
-print("开始编码code_str...")
-code_embeddings = []
-for idx, code_str in enumerate(merged_df["code_str"].fillna("")):
-    # 传入样本索引，便于调试
-    emb = code_encoder.encode_code(code_str, sample_idx=idx)
-    code_embeddings.append(emb)
-
-# 存储编码结果到DataFrame
-merged_df["code_str_embedding"] = [emb.tolist() for emb in code_embeddings]
-
-# ----------------------------
-# 4. 整合所有特征
-# ----------------------------
-# 合并特征：标签 + 所有编码特征 + One-hot特征
-final_df = pd.concat(
-    [
-        # 核心标签和向量特征
-        merged_df[["false_positive", "code_str_embedding",
-                   "Desc_embedding", "Func_embedding",
-                   "case_space_embedding", "case_purpose_embedding"]],
-        # One-hot编码特征
-        component_onehot,
-        case_id_onehot,
-        test_suite_onehot,
-        rule_onehot
-    ],
-    axis=1
+status_map = {"t": 1, "f": 0}
+merged_df["false_positive"] = merged_df["status"].map(
+    lambda x: status_map.get(str(x).strip().lower(), 0)
 )
+print("标签分布：")
+print(merged_df["false_positive"].value_counts())
+
 
 # ----------------------------
-# 5. 保存结果
+# 5. 特征融合（复用原有逻辑，无修改）
 # ----------------------------
-# 保存Excel（含所有特征和标签）
-final_df.to_excel(OUTPUT_EXCEL, index=False)
+def merge_features(row):
+    """将所有特征拼接为一个向量"""
+    # 1. 代码图嵌入（code_embedding）
+    code_emb = row["code_embedding"]
 
-# 单独保存各向量特征（方便后续直接加载，无需解析Excel）
-np.save(CODE_EMBEDDINGS_NPY, np.array(code_embeddings))
-np.save("desc_embeddings.npy", np.array(merged_df["Desc_embedding"].tolist()))
-np.save("func_embeddings.npy", np.array(merged_df["Func_embedding"].tolist()))
-np.save("case_space_embeddings.npy", np.array(merged_df["case_space_embedding"].tolist()))
-np.save("case_purpose_embeddings.npy", np.array(merged_df["case_purpose_embedding"].tolist()))
+    # 2. 文本字段嵌入（Desc_embedding等）
+    text_embs = []
+    for col in ["Desc_embedding", "Func_embedding", "case_space_embedding", "case_purpose_embedding"]:
+        text_embs.extend(row[col])
 
-print(f"✅ 所有数据处理完成！")
-print(f"最终特征数据: {OUTPUT_EXCEL}")
-print(f"code_str编码向量: {CODE_EMBEDDINGS_NPY}")
-print(
-    f"特征维度: code_str({code_embeddings[0].shape[0]}) + 文本(4×384) + One-hot({len(component_onehot.columns) + len(case_id_onehot.columns) + len(test_suite_onehot.columns) + len(rule_onehot.columns)})")
+    # 3. One-hot特征（需先将One-hot编码表与merged_df合并）
+    onehot_cols = [c for c in row.index if c.startswith(("component_", "case_id_", "test_suite_", "rule_"))]
+    onehot_embs = row[onehot_cols].tolist()
+
+    # 拼接所有特征
+    return code_emb + text_embs + onehot_embs
+
+
+# 合并One-hot编码到merged_df
+merged_df = pd.concat([merged_df, component_onehot, case_id_onehot, test_suite_onehot, rule_onehot], axis=1)
+
+# 生成最终融合特征
+merged_df["merged_features"] = merged_df.apply(merge_features, axis=1)
+
+# 保存处理后的数据集（用于后续有监督训练）
+merged_df.to_pickle("processed_dataset.pkl")
+print("所有特征处理完成，已保存至 processed_dataset.pkl")

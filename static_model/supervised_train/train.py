@@ -1,230 +1,231 @@
+import torch
 import pandas as pd
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader, random_split
-import lightning.pytorch as pl
-from lightning.pytorch import Trainer
-from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support, confusion_matrix
-import matplotlib.pyplot as plt
-import seaborn as sns
-from pathlib import Path
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+from torch.utils.data import Dataset, DataLoader
+from torch.optim.lr_scheduler import StepLR
+from tqdm import tqdm
+# 导入你的模型
+from model import LogClassifier
+from model import EarlyStopping
 
 
-# 定义分类器（保持你提供的简单单层结构）
-class LogClassifier(nn.Module):
-    def __init__(self, input_dim, hidden_dim=128):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 2)  # 二分类：0（无缺陷）/1（有缺陷）
-        )
+# ----------------------------
+# 1. 配置参数（新增：明确正类为0）
+# ----------------------------
+DEVICE = torch.device("npu:4" if torch.npu.is_available() else "cpu")
+DATA_PATH = "processed_dataset.pkl"
+SAVE_MODEL_PATH = "best_log_classifier.pt"
+BATCH_SIZE = 32
+EPOCHS = 50
+LEARNING_RATE = 5e-4
+HIDDEN_DIM = 128
+TEST_SIZE = 0.2
+RANDOM_SEED = 42
+POS_LABEL = 0  # 核心修改：指定正类为0（非误报），所有指标围绕0类计算
 
-    def forward(self, x):
-        return self.net(x)
+
+# ----------------------------
+# 2. 加载数据并划分训练/测试集（无修改）
+# ----------------------------
+def load_and_split_data(data_path, test_size=0.2, seed=42):
+    data = pd.read_pickle(data_path)
+    X = torch.tensor(data["merged_features"].tolist(), dtype=torch.float32)
+    y = torch.tensor(data["false_positive"].tolist(), dtype=torch.long)
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y,
+        test_size=test_size,
+        random_state=seed,
+        stratify=y  # 分层抽样，保证0类在训练/测试集分布一致
+    )
+
+    print(f"数据加载完成（核心关注：0类=非误报）：")
+    print(f"- 总样本数：{len(X)} | 训练集：{len(X_train)} | 测试集：{len(X_test)}")
+    print(
+        f"- 训练集标签分布：0类（非误报）占比 {torch.sum(y_train == 0) / len(y_train):.2%}，1类（误报）占比 {torch.sum(y_train == 1) / len(y_train):.2%}")
+    print(
+        f"- 测试集标签分布：0类（非误报）占比 {torch.sum(y_test == 0) / len(y_test):.2%}，1类（误报）占比 {torch.sum(y_test == 1) / len(y_test):.2%}")
+
+    return X_train, X_test, y_train, y_test
 
 
-# 定义数据集类
-class DefectDataset(Dataset):
-    def __init__(self, data_path):
-        """
-        加载整合后的特征数据
-        data_path: 最终处理好的Excel文件路径（final_processed_data.xlsx）
-        """
-        self.df = pd.read_excel(data_path)
-        self.labels = self.df["false_positive"].values  # 标签
-        self.features = self._prepare_features()  # 特征矩阵
-
-    def _prepare_features(self):
-        """将各类特征拼接为统一的特征向量"""
-        features_list = []
-
-        # 1. 处理code_str编码（图向量）
-        code_embeddings = np.array([np.array(emb) for emb in self.df["code_str_embedding"]])
-        features_list.append(code_embeddings)
-
-        # 2. 处理文本编码（Sentence-BERT向量）
-        text_cols = ["Desc_embedding", "Func_embedding", "case_space_embedding", "case_purpose_embedding"]
-        for col in text_cols:
-            embeddings = np.array([np.array(emb) for emb in self.df[col]])
-            features_list.append(embeddings)
-
-        # 3. 处理One-hot特征（直接取数值列）
-        onehot_cols = [col for col in self.df.columns if
-                       col.startswith(("component_", "case_id_", "test_suite_", "rule_"))]
-        onehot_features = self.df[onehot_cols].values
-        features_list.append(onehot_features)
-
-        # 拼接所有特征（按样本维度拼接）
-        return np.concatenate(features_list, axis=1).astype(np.float32)
+# ----------------------------
+# 3. 定义数据集类（无修改）
+# ----------------------------
+class FeatureDataset(Dataset):
+    def __init__(self, X, y):
+        self.X = X
+        self.y = y
 
     def __len__(self):
-        return len(self.df)
+        return len(self.X)
 
     def __getitem__(self, idx):
-        return {
-            "features": torch.tensor(self.features[idx], dtype=torch.float32),
-            "label": torch.tensor(self.labels[idx], dtype=torch.long)
-        }
+        return self.X[idx], self.y[idx]
 
 
-# 定义Lightning模块（封装训练逻辑）
-class DefectPredictor(pl.LightningModule):
-    def __init__(self, input_dim, hidden_dim=128, lr=1e-4):
-        super().__init__()
-        self.save_hyperparameters()
-        self.model = LogClassifier(input_dim, hidden_dim)
-        self.loss_fn = nn.CrossEntropyLoss()  # 二分类交叉熵损失
-        self.val_metrics = []  # 保存验证集指标
-
-    def forward(self, x):
-        return self.model(x)
-
-    def training_step(self, batch, batch_idx):
-        features = batch["features"]
-        labels = batch["label"]
-        outputs = self(features)
-        loss = self.loss_fn(outputs, labels)
-
-        # 计算训练集准确率
-        preds = torch.argmax(outputs, dim=1)
-        acc = accuracy_score(labels.cpu(), preds.cpu())
-
-        self.log("train_loss", loss, prog_bar=True, sync_dist=True)
-        self.log("train_acc", acc, prog_bar=True, sync_dist=True)
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        features = batch["features"]
-        labels = batch["label"]
-        outputs = self(features)
-        loss = self.loss_fn(outputs, labels)
-
-        preds = torch.argmax(outputs, dim=1)
-        acc = accuracy_score(labels.cpu(), preds.cpu())
-        precision, recall, f1, _ = precision_recall_fscore_support(
-            labels.cpu(), preds.cpu(), average="binary"
-        )
-
-        self.log("val_loss", loss, prog_bar=True, sync_dist=True)
-        self.log("val_acc", acc, prog_bar=True, sync_dist=True)
-        self.log("val_f1", f1, prog_bar=True, sync_dist=True)
-
-        self.val_metrics.append({
-            "labels": labels.cpu(),
-            "preds": preds.cpu()
-        })
-        return loss
-
-    def on_validation_epoch_end(self):
-        """每个验证 epoch 结束后计算混淆矩阵"""
-        all_labels = torch.cat([m["labels"] for m in self.val_metrics]).numpy()
-        all_preds = torch.cat([m["preds"] for m in self.val_metrics]).numpy()
-
-        # 计算混淆矩阵
-        cm = confusion_matrix(all_labels, all_preds)
-        plt.figure(figsize=(8, 6))
-        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
-                    xticklabels=["无缺陷", "有缺陷"],
-                    yticklabels=["无缺陷", "有缺陷"])
-        plt.xlabel("预测标签")
-        plt.ylabel("真实标签")
-        plt.title(f"验证集混淆矩阵 (Epoch {self.current_epoch})")
-
-        # 保存混淆矩阵图片
-        Path("classifier_results/confusion_matrices").mkdir(parents=True, exist_ok=True)
-        plt.savefig(f"classifier_results/confusion_matrices/epoch_{self.current_epoch}.png")
-        plt.close()
-
-        self.val_metrics.clear()  # 清空缓存
-
-    def configure_optimizers(self):
-        return optim.Adam(self.parameters(), lr=self.hparams.lr)
+# ----------------------------
+# 4. 计算类别权重（无修改，但需注意：0类是少数类，权重会更大）
+# ----------------------------
+def calculate_class_weights(y_train):
+    class_count = torch.bincount(y_train)  # [0类数量, 1类数量]
+    total_samples = len(y_train)
+    class_weights = total_samples / (2 * class_count)  # 0类（少数）权重更大，符合关注0类需求
+    class_weights = class_weights.float().to(DEVICE)
+    print(f"类别权重（0类=非误报，权重更大以优先学习）：0类={class_weights[0]:.4f}，1类={class_weights[1]:.4f}")
+    return class_weights
 
 
-def main():
-    # 配置
-    DATA_PATH = "final_processed_data.xlsx"  # 整合后的特征数据
-    BATCH_SIZE = 32
-    HIDDEN_DIM = 128
-    LEARNING_RATE = 1e-4
-    MAX_EPOCHS = 50
-    VAL_SPLIT = 0.2  # 训练集:验证集 = 8:2
-    device = torch.device("npu:6" if torch.npu.is_available() else
-                          "cuda:0" if torch.cuda.is_available() else "cpu")
+# ----------------------------
+# 5. 模型训练与验证（核心修改：围绕0类计算指标，早停监控0类F1）
+# ----------------------------
+def train_model():
+    X_train, X_test, y_train, y_test = load_and_split_data(DATA_PATH, TEST_SIZE, RANDOM_SEED)
 
-    # 创建输出目录
-    Path("classifier_results/checkpoints").mkdir(parents=True, exist_ok=True)
+    train_dataset = FeatureDataset(X_train, y_train)
+    test_dataset = FeatureDataset(X_test, y_test)
 
-    # 1. 加载数据
-    dataset = DefectDataset(DATA_PATH)
-    input_dim = dataset.features.shape[1]  # 自动计算输入特征维度
-    print(f"✅ 数据加载完成，样本数: {len(dataset)}, 特征维度: {input_dim}")
-
-    # 划分训练集和验证集
-    val_size = int(VAL_SPLIT * len(dataset))
-    train_size = len(dataset) - val_size
-    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
-
-    # 创建数据加载器
     train_loader = DataLoader(
         train_dataset,
         batch_size=BATCH_SIZE,
         shuffle=True,
-        num_workers=4,
-        pin_memory=True
+        num_workers=4
     )
-    val_loader = DataLoader(
-        val_dataset,
+    test_loader = DataLoader(
+        test_dataset,
         batch_size=BATCH_SIZE,
-        shuffle=False,
-        num_workers=4,
-        pin_memory=True
+        shuffle=False
     )
 
-    # 2. 初始化模型
-    model = DefectPredictor(
-        input_dim=input_dim,
-        hidden_dim=HIDDEN_DIM,
-        lr=LEARNING_RATE
-    )
+    # 初始化模型（类别权重已倾向0类）
+    input_dim = X_train.shape[1]
+    model = LogClassifier(input_dim=input_dim, hidden_dim=HIDDEN_DIM).to(DEVICE)
+    class_weights = calculate_class_weights(y_train)
+    criterion = torch.nn.CrossEntropyLoss(weight=class_weights)  # 加权损失优先优化0类预测
+    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    scheduler = StepLR(optimizer, step_size=10, gamma=0.8)
 
-    # 3. 配置训练器
-    checkpoint_callback = ModelCheckpoint(
-        dirpath="classifier_results/checkpoints",
-        filename="best-model",
-        monitor="val_f1",  # 以F1分数作为最优模型指标（比准确率更适合不平衡数据）
-        mode="max",
-        save_top_k=1
-    )
-
+    # 早停：监控0类的F1分数（核心关注0类，分数越高越好）
     early_stopping = EarlyStopping(
-        monitor="val_f1",
-        mode="max",
-        patience=5,  # 5个epoch没提升就停止
-        verbose=True
+        patience=5,
+        verbose=True,
+        delta=0.001,
+        path=SAVE_MODEL_PATH
     )
 
-    trainer = Trainer(
-        max_epochs=MAX_EPOCHS,
-        accelerator="npu" if "npu" in str(device) else "gpu" if "cuda" in str(device) else "cpu",
-        devices=[int(str(device).split(":")[-1])] if "npu" in str(device) or "cuda" in str(device) else "auto",
-        callbacks=[checkpoint_callback, early_stopping],
-        default_root_dir="classifier_results",
-        log_every_n_steps=10
-    )
+    print(f"\n开始训练（设备：{DEVICE}，核心关注：0类=非误报的预测效果）...")
+    for epoch in range(1, EPOCHS + 1):
+        # ---------------------- 训练阶段（围绕0类计算指标） ----------------------
+        model.train()
+        train_loss = 0.0
+        train_preds = []
+        train_true = []
 
-    # 4. 开始训练
-    print(f"🚀 开始训练分类器，设备: {device}")
-    trainer.fit(model, train_loader, val_loader)
+        for batch_x, batch_y in tqdm(train_loader, desc=f"Epoch {epoch}/{EPOCHS} [Train]"):
+            batch_x, batch_y = batch_x.to(DEVICE), batch_y.to(DEVICE)
 
-    # 5. 输出最佳模型信息
-    print(f"🎯 训练完成！最佳模型保存在: {checkpoint_callback.best_model_path}")
-    print(f"最佳验证集F1分数: {checkpoint_callback.best_score:.4f}")
+            outputs = model(batch_x)
+            loss = criterion(outputs, batch_y)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            train_loss += loss.item() * batch_x.size(0)
+            train_preds.extend(torch.argmax(outputs, dim=1).cpu().numpy())
+            train_true.extend(batch_y.cpu().numpy())
+
+        # 计算训练集指标：所有指标围绕0类（POS_LABEL=0）
+        train_avg_loss = train_loss / len(train_loader.dataset)
+        train_acc = accuracy_score(train_true, train_preds)
+        # 关键：pos_label=0，指标反映0类的预测效果
+        train_precision_0 = precision_score(train_true, train_preds, average="binary", pos_label=POS_LABEL)
+        train_recall_0 = recall_score(train_true, train_preds, average="binary", pos_label=POS_LABEL)
+        train_f1_0 = f1_score(train_true, train_preds, average="binary", pos_label=POS_LABEL)
+
+        # ---------------------- 验证阶段（围绕0类计算指标） ----------------------
+        model.eval()
+        val_loss = 0.0
+        val_preds = []
+        val_true = []
+
+        with torch.no_grad():
+            for batch_x, batch_y in test_loader:
+                batch_x, batch_y = batch_x.to(DEVICE), batch_y.to(DEVICE)
+
+                outputs = model(batch_x)
+                loss = criterion(outputs, batch_y)
+
+                val_loss += loss.item() * batch_x.size(0)
+                val_preds.extend(torch.argmax(outputs, dim=1).cpu().numpy())
+                val_true.extend(batch_y.cpu().numpy())
+
+        # 计算验证集指标：围绕0类
+        val_avg_loss = val_loss / len(test_loader.dataset)
+        val_acc = accuracy_score(val_true, val_preds)
+        val_precision_0 = precision_score(val_true, val_preds, average="binary", pos_label=POS_LABEL)
+        val_recall_0 = recall_score(val_true, val_preds, average="binary", pos_label=POS_LABEL)
+        val_f1_0 = f1_score(val_true, val_preds, average="binary", pos_label=POS_LABEL)
+
+        # ---------------------- 日志打印（突出0类指标） ----------------------
+        print(f"Epoch {epoch:02d} | "
+              f"Train Loss: {train_avg_loss:.4f} | "
+              f"Train Acc: {train_acc:.4f} | "
+              f"Train_0类（非误报）: Prec={train_precision_0:.4f}, Rec={train_recall_0:.4f}, F1={train_f1_0:.4f} | "
+              f"Val Loss: {val_avg_loss:.4f} | "
+              f"Val Acc: {val_acc:.4f} | "
+              f"Val_0类（非误报）: Prec={val_precision_0:.4f}, Rec={val_recall_0:.4f}, F1={val_f1_0:.4f}")
+
+        # 学习率衰减
+        scheduler.step()
+
+        # 早停判断：监控0类的F1分数（核心！确保模型优先优化0类预测）
+        early_stopping(val_f1_0, model)  # 无需加负号：0类F1越高越好，符合早停类逻辑
+        if early_stopping.early_stop:
+            print("早停触发（0类F1连续5轮无提升），训练结束！")
+            break
+
+    # ---------------------- 最终测试集评估（突出0类效果） ----------------------
+    print(f"\n加载最优模型（{SAVE_MODEL_PATH}）...")
+    best_model = LogClassifier(input_dim=input_dim, hidden_dim=HIDDEN_DIM).to(DEVICE)
+    best_model.load_state_dict(torch.load(SAVE_MODEL_PATH, map_location=DEVICE))
+
+    best_model.eval()
+    final_preds = []
+    final_true = []
+    with torch.no_grad():
+        for batch_x, batch_y in test_loader:
+            batch_x = batch_x.to(DEVICE)
+            outputs = best_model(batch_x)
+            final_preds.extend(torch.argmax(outputs, dim=1).cpu().numpy())
+            final_true.extend(batch_y.numpy())
+
+    # 计算最终指标：重点展示0类的精确率、召回率、F1
+    final_acc = accuracy_score(final_true, final_preds)
+    final_precision_0 = precision_score(final_true, final_preds, average="binary", pos_label=POS_LABEL)
+    final_recall_0 = recall_score(final_true, final_preds, average="binary", pos_label=POS_LABEL)
+    final_f1_0 = f1_score(final_true, final_preds, average="binary", pos_label=POS_LABEL)
+    # 可选：展示1类指标作为对比
+    final_precision_1 = precision_score(final_true, final_preds, average="binary", pos_label=1)
+    final_recall_1 = recall_score(final_true, final_preds, average="binary", pos_label=1)
+    final_f1_1 = f1_score(final_true, final_preds, average="binary", pos_label=1)
+
+    # 日志：突出0类指标的业务意义
+    print(f"\n==================== 最终测试集性能（核心关注：0类=非误报） ====================")
+    print(f"整体准确率（Accuracy）: {final_acc:.4f}")
+    print(f"\n【0类（非误报）核心指标】")
+    print(f"精确率（Precision）: {final_precision_0:.4f} → 预测为非误报的样本中，实际是non-误报的比例（避免误判正常样本）")
+    print(f"召回率（Recall）: {final_recall_0:.4f} → 实际是非误报的样本中，被正确预测的比例（避免漏判正常样本）")
+    print(f"F1分数: {final_f1_0:.4f} → 0类预测效果的综合评价")
+    print(f"\n【1类（误报）对比指标】")
+    print(f"精确率: {final_precision_1:.4f}, 召回率: {final_recall_1:.4f}, F1: {final_f1_1:.4f}")
+    print("=============================================================================")
 
 
+# ----------------------------
+# 6. 启动训练
+# ----------------------------
 if __name__ == "__main__":
-    main()
+    train_model()
