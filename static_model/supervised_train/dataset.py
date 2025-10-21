@@ -3,7 +3,7 @@ import json
 import pandas as pd
 import torch
 from tqdm import tqdm
-from sentence_transformers import SentenceTransformer
+from transformers import AutoTokenizer, AutoModel
 from torch_geometric.data import Batch  # 新增：用于合并内存中的图数据
 # 导入内存版代码图生成函数（替换原process_sample）
 from unsupervised_train.preprocess import generate_graph_in_memory  # 关键替换：内存版函数
@@ -135,7 +135,10 @@ merged_df["code_embedding"] = code_embeddings
 # 3. 其他字段编码（复用原有逻辑，无修改）
 # ----------------------------
 # Sentence-BERT编码文本字段
-text_model = SentenceTransformer("./models/paraphrase-multilingual-MiniLM-L12-v2")
+MODEL_PATH = "./models/paraphrase-multilingual-MiniLM-L12-v2"
+tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+text_model = AutoModel.from_pretrained(MODEL_PATH).to(DEVICE)
+text_model.eval()
 
 
 def encode_texts(texts):
