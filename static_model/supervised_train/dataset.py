@@ -44,11 +44,11 @@ for i, row in df.iterrows():
             "component": data.get("component", ""),
             "code_str": processed_code,  # 存储预处理后的code_str
             "raw_code": raw_code,  # 保留原始code_str用于追溯
-            "Desc": data.get("Desc", ""),
-            "Func": data.get("Func", ""),
+            "Desc": data.get("desc", ""),
+            "Func": data.get("func", ""),
             "case_id": data.get("case_id", ""),
             "test_suite": data.get("test_suite", ""),
-            "case_space": data.get("case_space", ""),
+            "case_spce": data.get("case_spce", ""),
             "case_purpose": data.get("case_purpose", "")
         })
     except Exception as e:
@@ -56,7 +56,7 @@ for i, row in df.iterrows():
         results.append({
             "component": "", "code_str": "", "raw_code": "",
             "Desc": "", "Func": "", "case_id": "", "test_suite": "",
-            "case_space": "", "case_purpose": ""
+            "case_spce": "", "case_purpose": ""
         })
 
 # 合并原始数据与解析结果
@@ -140,13 +140,68 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 text_model = AutoModel.from_pretrained(MODEL_PATH).to(DEVICE)
 text_model.eval()
 
+def mean_pooling(model_output, attention_mask):
+    """
+    对 transformer 的 last_hidden_state 按 attention_mask 做加权平均作为句向量
+    model_output: transformers 输出对象（含 last_hidden_state）
+    attention_mask: tensor shape (batch, seq_len)
+    返回: tensor shape (batch, hidden_size)
+    """
+    token_embeddings = model_output.last_hidden_state  # (batch, seq_len, hidden)
+    input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()  # (batch, seq_len, hidden)
+    # 避免除以0
+    sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, dim=1)
+    sum_mask = input_mask_expanded.sum(dim=1)  # (batch, hidden)
+    # 防止除0（当某行全是padding时）
+    sum_mask = torch.clamp(sum_mask, min=1e-9)
+    return sum_embeddings / sum_mask
 
-def encode_texts(texts):
-    return text_model.encode([str(x) if x is not None else "" for x in texts], show_progress_bar=True)
+def encode_texts(texts, tokenizer, model, device, batch_size=32, max_length=128, show_progress=True):
+    """
+    使用 transformers.AutoTokenizer + AutoModel 编码文本为向量（mean pooling）。
+    texts: list[str]
+    tokenizer: AutoTokenizer 实例
+    model: AutoModel 实例（已 .to(device) 并 eval()）
+    device: torch.device（例如 'cpu','cuda' 或 'npu'）
+    batch_size: 批大小
+    max_length: 最大序列长度
+    返回: list of list (每个文本对应的向量)
+    """
+    all_embeddings = []
+    model.eval()
+    with torch.no_grad():
+        iterator = range(0, len(texts), batch_size)
+        if show_progress:
+            iterator = tqdm(iterator, desc="编码文本")
+        for start in iterator:
+            batch_texts = texts[start:start + batch_size]
+            # tokenizer 返回 tensors 放在 device 上
+            encoded = tokenizer(
+                batch_texts,
+                padding=True,
+                truncation=True,
+                max_length=max_length,
+                return_tensors="pt"
+            )
+            input_ids = encoded["input_ids"].to(device)
+            attention_mask = encoded["attention_mask"].to(device)
+
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+            # mean pooling（按mask）
+            sentence_embeddings = mean_pooling(outputs, attention_mask)  # (batch, hidden)
+            # 转为 CPU list
+            sentence_embeddings = sentence_embeddings.cpu().tolist()
+            all_embeddings.extend(sentence_embeddings)
+
+    return all_embeddings
+
+# def encode_texts(texts):
+#     return text_model.encode([str(x) if x is not None else "" for x in texts], show_progress_bar=True)
 
 
-for col in ["Desc", "Func", "case_space", "case_purpose"]:
-    embeddings = encode_texts(merged_df[col].fillna("").tolist())
+for col in ["Desc", "Func", "case_spce", "case_purpose"]:
+    texts = merged_df[col].fillna("").astype(str).tolist()
+    embeddings = encode_texts(texts, tokenizer, text_model, DEVICE, batch_size=32, max_length=128)
     merged_df[col + "_embedding"] = [emb.tolist() for emb in embeddings]
 
 # One-hot编码类别字段
