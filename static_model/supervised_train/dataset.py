@@ -27,7 +27,7 @@ df = pd.read_excel(INPUT_EXCEL)
 results = []
 for i, row in df.iterrows():
     try:
-        data = json.loads(row["Data"])
+        data = json.loads(row["data"])
         # 原始code_str提取
         raw_code = str(data.get("code_str", "")).strip()
 
