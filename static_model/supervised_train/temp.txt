@@ -1,0 +1,8 @@
+
+pytorch_model.bin
+config.json
+sentence_bert_config.json
+tokenizer_config.json
+sentencepiece.bpe.model
+special_tokens_map.json
+modules.json
