@@ -202,7 +202,7 @@ def encode_texts(texts, tokenizer, model, device, batch_size=32, max_length=128,
 for col in ["Desc", "Func", "case_spce", "case_purpose"]:
     texts = merged_df[col].fillna("").astype(str).tolist()
     embeddings = encode_texts(texts, tokenizer, text_model, DEVICE, batch_size=32, max_length=128)
-    merged_df[col + "_embedding"] = [emb.tolist() for emb in embeddings]
+    merged_df[col + "_embedding"] = [emb for emb in embeddings]
 
 # One-hot编码类别字段
 component_onehot = pd.get_dummies(merged_df["component"], prefix="component")
@@ -249,5 +249,44 @@ merged_df = pd.concat([merged_df, component_onehot, case_id_onehot, test_suite_o
 merged_df["merged_features"] = merged_df.apply(merge_features, axis=1)
 
 # 保存处理后的数据集（用于后续有监督训练）
-merged_df.to_pickle("processed_dataset.pkl")
-print("所有特征处理完成，已保存至 processed_dataset.pkl")
+processed_data_path = "processed_dataset.pkl"
+merged_df.to_pickle("processed_data_path")
+print(f"所有特征处理完成，已保存至 {processed_data_path}")
+
+# 新增：训练相关配置
+TRAINED_MODEL_SAVE_PATH = "best_log_classifier.pt"  # 训练好的模型保存路径
+BATCH_SIZE = 32
+EPOCHS = 50
+LEARNING_RATE = 5e-4
+HIDDEN_DIM = 128
+TEST_SIZE = 0.2
+RANDOM_SEED = 42
+POS_LABEL = 0  # 核心关注0类（非误报）
+NEG_LABEL = 1# ----------------------------
+# 6. 调用训练流程（特征保存后新增）
+# ----------------------------
+print("\n===== 开始调用模型训练流程 =====")
+# 导入训练模块（确保train_script.py与当前文件在同一目录，或已加入环境变量）
+from train_supervised import train_model  # 假设之前封装的训练代码在train_script.py中
+
+# 调用训练函数，使用生成的特征文件作为输入
+try:
+    # 训练模型并获取结果
+    trained_model, final_metrics = train_model(
+        data_path=processed_data_path,  # 使用刚生成的特征文件
+        save_model_path=TRAINED_MODEL_SAVE_PATH,
+        batch_size=BATCH_SIZE,
+        epochs=EPOCHS,
+        learning_rate=LEARNING_RATE,
+        hidden_dim=HIDDEN_DIM,
+        test_size=TEST_SIZE,
+        random_seed=RANDOM_SEED,
+        pos_label=POS_LABEL  # 核心关注0类
+    )
+    print("\n===== 训练流程完成 =====")
+    print(f"最优模型已保存至：{TRAINED_MODEL_SAVE_PATH}")
+    print("核心指标 summary：")
+    print(f"0类F1分数：{final_metrics['class_0']['f1']:.4f}")
+    print(f"0类召回率：{final_metrics['class_0']['recall']:.4f}")
+except Exception as e:
+    print(f"训练过程出错：{e}")

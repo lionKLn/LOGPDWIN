@@ -10,11 +10,17 @@ from tqdm import tqdm
 from model import LogClassifier
 from model import EarlyStopping
 
+# 优先导入NPU支持
+try:
+    import torch_npu
+    npu_available = torch.npu.is_available()
+except ImportError:
+    npu_available = False
 
 # ----------------------------
 # 1. 配置参数（新增：明确正类为0）
 # ----------------------------
-DEVICE = torch.device("npu:4" if torch.npu.is_available() else "cpu")
+DEVICE = torch.device("npu:5" if npu_available else "cpu")
 DATA_PATH = "processed_dataset.pkl"
 SAVE_MODEL_PATH = "best_log_classifier.pt"
 BATCH_SIZE = 32
