@@ -49,81 +49,81 @@ def get_device():
     return torch.device("npu:5" if npu_available else "cpu")
 
 
-def load_and_split_data(data_path, test_size=0.2, seed=42):
-    """
-    加载数据并划分训练/测试集（分层抽样）
-    :param data_path: 数据文件路径（.pkl）
-    :param test_size: 测试集占比
-    :param seed: 随机种子（保证可复现）
-    :return: X_train, X_test, y_train, y_test（均为torch张量）
-    """
-    if not os.path.exists(data_path):
-        raise FileNotFoundError(f"数据文件不存在：{data_path}")
-
-    data = pd.read_pickle(data_path)
-    X = torch.tensor(data["merged_features"].tolist(), dtype=torch.float32)
-    y = torch.tensor(data["false_positive"].tolist(), dtype=torch.long)
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y,
-        test_size=test_size,
-        random_state=seed,
-        stratify=y  # 分层抽样，保证标签分布一致
-    )
-
-    # 打印数据分布（可选，外部调用时可注释）
-    print(f"数据加载完成：")
-    print(f"- 总样本数：{len(X)} | 训练集：{len(X_train)} | 测试集：{len(X_test)}")
-    print(
-        f"- 训练集0类占比：{torch.sum(y_train == 0) / len(y_train):.2%}，1类占比：{torch.sum(y_train == 1) / len(y_train):.2%}")
-    print(
-        f"- 测试集0类占比：{torch.sum(y_test == 0) / len(y_test):.2%}，1类占比：{torch.sum(y_test == 1) / len(y_test):.2%}")
-
-    return X_train, X_test, y_train, y_test
-
-
-# def load_and_split_data(data_path, seed=42):
+# def load_and_split_data(data_path, test_size=0.2, seed=42):
 #     """
-#     加载数据并划分训练/验证/测试集（分层抽样）
+#     加载数据并划分训练/测试集（分层抽样）
 #     :param data_path: 数据文件路径（.pkl）
+#     :param test_size: 测试集占比
 #     :param seed: 随机种子（保证可复现）
-#     :return: X_train, X_val, X_test, y_train, y_val, y_test（均为torch张量）
+#     :return: X_train, X_test, y_train, y_test（均为torch张量）
 #     """
 #     if not os.path.exists(data_path):
 #         raise FileNotFoundError(f"数据文件不存在：{data_path}")
 #
-#     # 1️⃣ 加载数据
 #     data = pd.read_pickle(data_path)
 #     X = torch.tensor(data["merged_features"].tolist(), dtype=torch.float32)
 #     y = torch.tensor(data["false_positive"].tolist(), dtype=torch.long)
 #
-#     # 2️⃣ 第一步：先划分出训练集（70%）和临时集（30%）
-#     X_train, X_temp, y_train, y_temp = train_test_split(
+#     X_train, X_test, y_train, y_test = train_test_split(
 #         X, y,
-#         test_size=0.3,          # 剩下30%再分成验证和测试
+#         test_size=test_size,
 #         random_state=seed,
-#         stratify=y              # 分层抽样，保持类别比例一致
+#         stratify=y  # 分层抽样，保证标签分布一致
 #     )
 #
-#     # 3️⃣ 第二步：从临时集再划分验证集和测试集（各占15%）
-#     X_val, X_test, y_val, y_test = train_test_split(
-#         X_temp, y_temp,
-#         test_size=0.5,          # 0.5 * 30% = 15%
-#         random_state=seed,
-#         stratify=y_temp         # 再次分层抽样
-#     )
+#     # 打印数据分布（可选，外部调用时可注释）
+#     print(f"数据加载完成：")
+#     print(f"- 总样本数：{len(X)} | 训练集：{len(X_train)} | 测试集：{len(X_test)}")
+#     print(
+#         f"- 训练集0类占比：{torch.sum(y_train == 0) / len(y_train):.2%}，1类占比：{torch.sum(y_train == 1) / len(y_train):.2%}")
+#     print(
+#         f"- 测试集0类占比：{torch.sum(y_test == 0) / len(y_test):.2%}，1类占比：{torch.sum(y_test == 1) / len(y_test):.2%}")
 #
-#     # 4️⃣ 打印数据分布（可注释）
-#     print(f"✅ 数据加载完成：")
-#     print(f"- 总样本数：{len(X)}")
-#     print(f"- 训练集：{len(X_train)} ({len(X_train)/len(X):.1%})")
-#     print(f"- 验证集：{len(X_val)} ({len(X_val)/len(X):.1%})")
-#     print(f"- 测试集：{len(X_test)} ({len(X_test)/len(X):.1%})")
-#     print(f"训练集标签分布：0类 {torch.sum(y_train==0)/len(y_train):.2%}, 1类 {torch.sum(y_train==1)/len(y_train):.2%}")
-#     print(f"验证集标签分布：0类 {torch.sum(y_val==0)/len(y_val):.2%}, 1类 {torch.sum(y_val==1)/len(y_val):.2%}")
-#     print(f"测试集标签分布：0类 {torch.sum(y_test==0)/len(y_test):.2%}, 1类 {torch.sum(y_test==1)/len(y_test):.2%}")
-#
-#     return X_train, X_val, X_test, y_train, y_val, y_test
+#     return X_train, X_test, y_train, y_test
+
+
+def load_and_split_data(data_path, seed=42):
+    """
+    加载数据并划分训练/验证/测试集（分层抽样）
+    :param data_path: 数据文件路径（.pkl）
+    :param seed: 随机种子（保证可复现）
+    :return: X_train, X_val, X_test, y_train, y_val, y_test（均为torch张量）
+    """
+    if not os.path.exists(data_path):
+        raise FileNotFoundError(f"数据文件不存在：{data_path}")
+
+    # 1️⃣ 加载数据
+    data = pd.read_pickle(data_path)
+    X = torch.tensor(data["merged_features"].tolist(), dtype=torch.float32)
+    y = torch.tensor(data["false_positive"].tolist(), dtype=torch.long)
+
+    # 2️⃣ 第一步：先划分出训练集（70%）和临时集（30%）
+    X_train, X_temp, y_train, y_temp = train_test_split(
+        X, y,
+        test_size=0.3,          # 剩下30%再分成验证和测试
+        random_state=seed,
+        stratify=y              # 分层抽样，保持类别比例一致
+    )
+
+    # 3️⃣ 第二步：从临时集再划分验证集和测试集（各占15%）
+    X_val, X_test, y_val, y_test = train_test_split(
+        X_temp, y_temp,
+        test_size=0.5,          # 0.5 * 30% = 15%
+        random_state=seed,
+        stratify=y_temp         # 再次分层抽样
+    )
+
+    # 4️⃣ 打印数据分布（可注释）
+    print(f"✅ 数据加载完成：")
+    print(f"- 总样本数：{len(X)}")
+    print(f"- 训练集：{len(X_train)} ({len(X_train)/len(X):.1%})")
+    print(f"- 验证集：{len(X_val)} ({len(X_val)/len(X):.1%})")
+    print(f"- 测试集：{len(X_test)} ({len(X_test)/len(X):.1%})")
+    print(f"训练集标签分布：0类 {torch.sum(y_train==0)/len(y_train):.2%}, 1类 {torch.sum(y_train==1)/len(y_train):.2%}")
+    print(f"验证集标签分布：0类 {torch.sum(y_val==0)/len(y_val):.2%}, 1类 {torch.sum(y_val==1)/len(y_val):.2%}")
+    print(f"测试集标签分布：0类 {torch.sum(y_test==0)/len(y_test):.2%}, 1类 {torch.sum(y_test==1)/len(y_test):.2%}")
+
+    return X_train, X_val, X_test, y_train, y_val, y_test
 
 def calculate_class_weights(y_train, device):
     """
@@ -159,7 +159,7 @@ def train_model(
     :param hidden_dim: 模型隐藏层维度
     :param test_size: 测试集占比
     :param random_seed: 随机种子
-    :param pos_label: 正类标签（默认0类）
+    :param pos_label: 正类标签
     :return: 训练完成的模型、最终测试集指标字典
     """
     # 1. 初始化设备
@@ -167,18 +167,25 @@ def train_model(
     print(f"使用设备：{device}")
 
     # 2. 加载并划分数据
-    X_train, X_test, y_train,  y_test = load_and_split_data(
+    X_train, X_val, X_test, y_train,y_val,  y_test = load_and_split_data(
         data_path, test_size=test_size, seed=random_seed
     )
 
     # 3. 创建数据加载器
     train_dataset = FeatureDataset(X_train, y_train)
+    val_dataset = FeatureDataset(X_val, y_val)
     test_dataset = FeatureDataset(X_test, y_test)
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
+        num_workers=4
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,  # 验证集和测试集不需要打乱
         num_workers=4
     )
     test_loader = DataLoader(
@@ -238,7 +245,7 @@ def train_model(
         val_preds, val_true = [], []
 
         with torch.no_grad():
-            for batch_x, batch_y in test_loader:
+            for batch_x, batch_y in val_loader:
                 batch_x, batch_y = batch_x.to(device), batch_y.to(device)
 
                 outputs = model(batch_x)
@@ -249,7 +256,7 @@ def train_model(
                 val_true.extend(batch_y.cpu().numpy())
 
         # 计算验证集指标
-        val_avg_loss = val_loss / len(test_loader.dataset)
+        val_avg_loss = val_loss / len(val_loader.dataset)
         val_acc = accuracy_score(val_true, val_preds)
         val_precision = precision_score(val_true, val_preds, average="binary", pos_label=pos_label)
         val_recall = recall_score(val_true, val_preds, average="binary", pos_label=pos_label)

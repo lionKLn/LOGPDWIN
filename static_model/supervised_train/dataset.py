@@ -250,7 +250,7 @@ merged_df["merged_features"] = merged_df.apply(merge_features, axis=1)
 
 # 保存处理后的数据集（用于后续有监督训练）
 processed_data_path = "processed_dataset.pkl"
-merged_df.to_pickle("processed_data_path")
+merged_df.to_pickle(processed_data_path)
 print(f"所有特征处理完成，已保存至 {processed_data_path}")
 
 # 新增：训练相关配置
