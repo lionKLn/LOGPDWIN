@@ -10,10 +10,7 @@ from unsupervised_train.preprocess import process_sample  # 导入你之前写�
 
 
 def load_dataset_from_xlsx(xlsx_path: str):
-    """
-    从 .xlsx 文件中加载数据，提取 code_str 字段。
-    要求文件中至少有一列名为 'code_str'。
-    """
+
     if not os.path.exists(xlsx_path):
         raise FileNotFoundError(f"找不到文件: {xlsx_path}")
 

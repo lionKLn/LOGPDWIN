@@ -314,10 +314,7 @@ def train_model(
     print(f"精确率：{final_metrics[f'class_{pos_label}']['precision']:.4f}")
     print(f"召回率：{final_metrics[f'class_{pos_label}']['recall']:.4f}")
     print(f"F1分数：{final_metrics[f'class_{pos_label}']['f1']:.4f}")
-    print(f"\n对比类（{1 - pos_label}类）指标：")
-    print(f"精确率：{final_metrics[f'class_{1 - pos_label}']['precision']:.4f}")
-    print(f"召回率：{final_metrics[f'class_{1 - pos_label}']['recall']:.4f}")
-    print(f"F1分数：{final_metrics[f'class_{1 - pos_label}']['f1']:.4f}")
+
     print("========================================================")
 
     # 返回模型和指标（方便外部调用时进一步处理）
