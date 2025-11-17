@@ -4,8 +4,8 @@ import numpy as np
 import torch.nn.functional as F
 from model import LogClassifier
 import os
-import joblib  # 新增：用于加载编码器
-from sklearn.preprocessing import OneHotEncoder  # 新增：确保编码器类可用
+import joblib
+from sklearn.preprocessing import OneHotEncoder
 
 
 import os
@@ -19,14 +19,14 @@ from unsupervised_train.preprocess import generate_graph_in_memory
 from model import GAE_GIN
 
 # ----------------------------
-# 配置参数（新增编码器路径）
+# 配置参数
 # ----------------------------
-INPUT_EXCEL = "path/to/your/input.xlsx"  # 待分析数据
+INPUT_EXCEL = "path/to/your/input.xlsx"
 UNSUPERVISED_MODEL_PATH = "logs/pdg/2025-05-20_14-30-00/best_pdg.pt"
 DEVICE = torch.device("npu:4" if torch.npu.is_available() else "cpu")
 EMBEDDING_DIM = 256
-ONEHOT_ENCODER_PATH = "onehot_encoder.pkl"  # 训练时保存的编码器路径
-ONEHOT_FEATURES_PATH = "onehot_feature_names.npy"  # 训练时保存的特征列名路径
+ONEHOT_ENCODER_PATH = "onehot_encoder.pkl"
+ONEHOT_FEATURES_PATH = "onehot_feature_names.npy"  # 训练时的所有OneHot列名（含顺序）
 
 # ----------------------------
 # 1. 加载Excel与解析JSON
@@ -38,7 +38,6 @@ for i, row in df.iterrows():
     try:
         data = json.loads(row["data"])
         raw_code = str(data.get("code_str", "")).strip()
-        # code_str 预处理
         if raw_code.startswith('('):
             processed_code = raw_code
         elif raw_code.startswith('{'):
@@ -56,20 +55,21 @@ for i, row in df.iterrows():
             "test_suite": data.get("test_suite", ""),
             "case_spce": data.get("case_spce", ""),
             "case_purpose": data.get("case_purpose", ""),
-            "rule": data.get("rule", "")  # 新增：确保rule字段被提取（与训练一致）
+            "rule": data.get("rule", "")
         })
     except Exception as e:
         print(f"第 {i} 行 JSON 解析失败: {e}")
         results.append({
             "component": "", "code_str": "", "raw_code": "",
             "Desc": "", "Func": "", "case_id": "", "test_suite": "",
-            "case_spce": "", "case_purpose": "", "rule": ""  # 补充rule默认值
+            "case_spce": "", "case_purpose": "", "rule": ""
         })
 
 merged_df = pd.concat([df, pd.DataFrame(results)], axis=1)
+onehot_fields = ["component", "case_id", "test_suite", "rule"]  # 需OneHot的字段（与训练一致）
 
 # ----------------------------
-# 2. 生成代码图并编码（无监督模型）
+# 2. 生成代码图并编码
 # ----------------------------
 print("内存中生成 code_str 的代码图...")
 graph_list = []
@@ -152,49 +152,47 @@ for col in ["Desc", "Func", "case_spce", "case_purpose"]:
     merged_df[col + "_embedding"] = encode_texts(texts, tokenizer, text_model, DEVICE)
 
 # ----------------------------
-# 4. One-hot 编码（核心修改：使用训练时保存的编码器）
+# 4. One-hot 编码（按你的思路实现：补齐列+强制顺序）
 # ----------------------------
-# 定义需要编码的离散字段（与训练时完全一致）
-categorical_cols = ["component", "case_id", "test_suite", "rule"]
-
-# 加载训练时保存的编码器和特征列名
+# 加载编码器和训练时的列名
 if not os.path.exists(ONEHOT_ENCODER_PATH) or not os.path.exists(ONEHOT_FEATURES_PATH):
     raise FileNotFoundError(f"❌ 未找到编码器文件，请确保 {ONEHOT_ENCODER_PATH} 和 {ONEHOT_FEATURES_PATH} 存在")
 
-onehot_encoder = joblib.load(ONEHOT_ENCODER_PATH)
-onehot_feature_names = np.load(ONEHOT_FEATURES_PATH)
+encoder = joblib.load(ONEHOT_ENCODER_PATH)
+encoder_columns = np.load(ONEHOT_FEATURES_PATH).tolist()  # 训练时的所有OneHot列名（含顺序）
 
-# 对新数据的离散字段进行预处理（与训练时一致：填充空值→转为字符串）
-merged_df[categorical_cols] = merged_df[categorical_cols].fillna("").astype(str)
+# 对新数据进行编码
+merged_df[onehot_fields] = merged_df[onehot_fields].fillna("").astype(str)  # 预处理
+onehot_encoded = encoder.transform(merged_df[onehot_fields])  # 生成编码矩阵
+onehot_df = pd.DataFrame(onehot_encoded, columns=encoder.get_feature_names_out())  # 临时DataFrame
 
-# 使用训练好的编码器对新数据进行编码（未知特征会被处理为全0）
-onehot_features = onehot_encoder.transform(merged_df[categorical_cols])
+# 1. 补齐训练时存在但新数据中缺失的列（用0填充）
+for col in encoder_columns:
+    if col not in onehot_df.columns:
+        onehot_df[col] = 0  # 新增列并填充0
 
-# 转换为DataFrame（确保列名与训练时完全一致）
-onehot_df = pd.DataFrame(
-    onehot_features,
-    columns=onehot_feature_names
-)
+# 2. 强制按训练时的列名顺序保留列（删除新数据中新增的列）
+onehot_df = onehot_df[encoder_columns]
 
 # 拼接至合并数据
 merged_df = pd.concat([merged_df, onehot_df], axis=1)
 
 # ----------------------------
-# 5. 特征融合（适配编码器的列名）
+# 5. 特征融合（使用训练时的列名顺序）
 # ----------------------------
 def merge_features(row):
     code_emb = row["code_embedding"]
     text_embs = []
     for col in ["Desc_embedding", "Func_embedding", "case_spce_embedding", "case_purpose_embedding"]:
         text_embs.extend(row[col])
-    # 使用训练时的One-Hot列名提取特征（确保与训练时维度一致）
-    onehot_embs = row[onehot_feature_names].tolist()
+    # 按训练时的列名顺序提取OneHot特征
+    onehot_embs = row[encoder_columns].tolist()
     return code_emb + text_embs + onehot_embs
 
 merged_df["merged_features"] = merged_df.apply(merge_features, axis=1)
 
 # ----------------------------
-# 6. 保存结果（无标签数据）
+# 6. 保存结果
 # ----------------------------
 processed_data_path = "data_to_infer.pkl"
 merged_df.to_pickle(processed_data_path)
@@ -204,21 +202,17 @@ print(f"✅ 待分析数据已处理完成，保存至 {processed_data_path}")
 # ========================
 # 🔧 推理配置
 # ========================
-MODEL_PATH = "best_log_classifier.pt"   # 模型路径
-DATA_PATH = "data_to_infer.pkl"              # 已编码的新数据路径
+MODEL_PATH = "best_log_classifier.pt"
+DATA_PATH = "data_to_infer.pkl"
 DEVICE = torch.device("npu:5" if torch.npu.is_available() else "cpu")
-HIDDEN_DIM = 128                        # 与训练时一致
-OUTPUT_PATH = "inference_results.csv"   # 输出结果文件路径
+HIDDEN_DIM = 128
+OUTPUT_PATH = "inference_results.csv"
 
 
 # ========================
 # 🔹 数据加载函数
 # ========================
 def load_new_data(data_path):
-    """
-    加载新数据并转换为tensor格式
-    假设DataFrame中含有一列 'merged_features'（与训练阶段一致）
-    """
     if not os.path.exists(data_path):
         raise FileNotFoundError(f"❌ 数据文件不存在: {data_path}")
 
@@ -232,25 +226,16 @@ def load_new_data(data_path):
 # 🔹 推理函数
 # ========================
 def predict_with_prob(model_path, data_tensor, hidden_dim=128):
-    """
-    使用保存的模型对新数据进行预测，并输出概率
-    :param model_path: 模型文件路径
-    :param data_tensor: 新样本特征张量 (shape: [N, feature_dim])
-    :param hidden_dim: 模型隐藏层维度（与训练保持一致）
-    :return: (pred_labels, probs_0, probs_1)
-    """
-    # 1️⃣ 加载模型结构
     input_dim = data_tensor.shape[1]
     model = LogClassifier(input_dim=input_dim, hidden_dim=hidden_dim)
     model.load_state_dict(torch.load(model_path, map_location=DEVICE))
     model.to(DEVICE)
     model.eval()
 
-    # 2️⃣ 推理阶段
     with torch.no_grad():
-        outputs = model(data_tensor.to(DEVICE))              # [N, 2]
-        probs = F.softmax(outputs, dim=1).cpu().numpy()      # 转换为概率分布
-        preds = np.argmax(probs, axis=1)                     # 取最大概率对应的标签
+        outputs = model(data_tensor.to(DEVICE))
+        probs = F.softmax(outputs, dim=1).cpu().numpy()
+        preds = np.argmax(probs, axis=1)
 
     return preds, probs[:, 0], probs[:, 1]
 
@@ -261,20 +246,14 @@ def predict_with_prob(model_path, data_tensor, hidden_dim=128):
 if __name__ == "__main__":
     print("🚀 开始模型推理...")
 
-    # 加载数据
     original_df, X_new = load_new_data(DATA_PATH)
-
-    # 模型预测
     preds, prob_0, prob_1 = predict_with_prob(MODEL_PATH, X_new, hidden_dim=HIDDEN_DIM)
     print("✅ 推理完成！")
 
-    # 组合结果
     result_df = original_df.copy()
     result_df["pred_label"] = preds
     result_df["prob_0"] = prob_0
     result_df["prob_1"] = prob_1
-
-    # 输出保存
     result_df.to_csv(OUTPUT_PATH, index=False, encoding="utf-8-sig")
 
     print(f"📄 预测结果已保存至：{OUTPUT_PATH}")
