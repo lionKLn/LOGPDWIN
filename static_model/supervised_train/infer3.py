@@ -260,6 +260,7 @@ if __name__ == "__main__":
     # 如果false_positive为f，那么pred_label为0就是一致的
     # 如果false_positive为t，那么pred_label为1就是一致的
     # --- TODO：计算 pred_label 和 false_positive 是否一致 ---
+    #todo 计算一下召回率，准确度，精确度
     result_df["is_match"] = result_df.apply(
         lambda row: (
                 (row["false_positive"] == "f" and row["pred_label"] == 0) or
@@ -275,6 +276,33 @@ if __name__ == "__main__":
 
     print(f"🔢 一致数量（is_match=True）：{match_count}")
     print(f"📊 一致占比：{match_ratio:.4f}  （约 {match_ratio * 100:.2f}% ）")
+
+    # --- 计算评估指标（召回率 Recall、准确度 Accuracy、精确度 Precision） ---
+
+    # 1. 将 false_positive 转换为真实标签 y_true
+    result_df["true_label"] = result_df["false_positive"].map({"f": 0, "t": 1})
+
+    y_true = result_df["true_label"].tolist()
+    y_pred = result_df["pred_label"].tolist()
+
+    # 2. 计算 TP, FP, TN, FN
+    TP = sum((result_df["true_label"] == 1) & (result_df["pred_label"] == 1))
+    TN = sum((result_df["true_label"] == 0) & (result_df["pred_label"] == 0))
+    FP = sum((result_df["true_label"] == 0) & (result_df["pred_label"] == 1))
+    FN = sum((result_df["true_label"] == 1) & (result_df["pred_label"] == 0))
+
+    # 3. 指标计算（避免除零）
+    accuracy = (TP + TN) / total if total > 0 else 0
+    recall = TP / (TP + FN) if (TP + FN) > 0 else 0
+    precision = TP / (TP + FP) if (TP + FP) > 0 else 0
+
+    print("\n📊 —— 评估指标 ——")
+    print(f"🎯 准确度 Accuracy：{accuracy:.4f} （{accuracy * 100:.2f}%）")
+    print(f"📈 召回率 Recall：{recall:.4f} （{recall * 100:.2f}%）")
+    print(f"🎯 精确度 Precision：{precision:.4f} （{precision * 100:.2f}%）")
+
+    print(f"\n🔍 TP={TP}, FP={FP}, TN={TN}, FN={FN}")
+
     # ----------------------------------------------------------
     result_df.to_csv(OUTPUT_PATH, index=False, encoding="utf-8-sig")
     print(f"📄 预测结果已保存至：{OUTPUT_PATH}")
