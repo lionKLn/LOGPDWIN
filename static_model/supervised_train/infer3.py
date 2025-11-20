@@ -246,7 +246,7 @@ if __name__ == "__main__":
     preds, prob_0, prob_1 = predict_with_prob(MODEL_PATH, X_new, hidden_dim=HIDDEN_DIM)
     print("✅ 推理完成！")
 
-    #todo 对result_df进行处理，只保留["id","data","ts","false_positive","component","rule"]数据项
+
     result_df = original_df.copy()
 
 
@@ -256,6 +256,26 @@ if __name__ == "__main__":
     # 最终只保留 ["id", "data", "ts", "false_positive", "component", "rule","pred_label","prob_0","prob_1"]
     keep_cols = ["id", "data", "ts", "false_positive", "component", "rule","pred_label","prob_0","prob_1"]
     result_df = result_df[keep_cols]
+    #todo 计算一下pred_label和false_positive的一致情况
+    # 如果false_positive为f，那么pred_label为0就是一致的
+    # 如果false_positive为t，那么pred_label为1就是一致的
+    # --- TODO：计算 pred_label 和 false_positive 是否一致 ---
+    result_df["is_match"] = result_df.apply(
+        lambda row: (
+                (row["false_positive"] == "f" and row["pred_label"] == 0) or
+                (row["false_positive"] == "t" and row["pred_label"] == 1)
+        ),
+        axis=1
+    )
+
+    # 📌 这里加入统计代码
+    total = len(result_df)
+    match_count = result_df["is_match"].sum()
+    match_ratio = match_count / total if total > 0 else 0
+
+    print(f"🔢 一致数量（is_match=True）：{match_count}")
+    print(f"📊 一致占比：{match_ratio:.4f}  （约 {match_ratio * 100:.2f}% ）")
+    # ----------------------------------------------------------
     result_df.to_csv(OUTPUT_PATH, index=False, encoding="utf-8-sig")
     print(f"📄 预测结果已保存至：{OUTPUT_PATH}")
     print(f"样例预览：")
