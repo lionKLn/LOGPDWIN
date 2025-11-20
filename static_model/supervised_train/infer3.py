@@ -32,7 +32,7 @@ ONEHOT_FIELDS = ["component", "case_id", "test_suite", "rule"]  # 顺序不可�
 
 
 # ----------------------------
-# 1. 加载Excel与解析JSON
+# 1. 加载Excel与解析JSON，最原始的excel文件
 # ----------------------------
 df = pd.read_excel(INPUT_EXCEL)
 
@@ -245,10 +245,17 @@ if __name__ == "__main__":
     original_df, X_new = load_new_data(DATA_PATH)
     preds, prob_0, prob_1 = predict_with_prob(MODEL_PATH, X_new, hidden_dim=HIDDEN_DIM)
     print("✅ 推理完成！")
+
+    #todo 对result_df进行处理，只保留["id","data","ts","false_positive","component","rule"]数据项
     result_df = original_df.copy()
+
+
     result_df["pred_label"] = preds
     result_df["prob_0"] = prob_0
     result_df["prob_1"] = prob_1
+    # 最终只保留 ["id", "data", "ts", "false_positive", "component", "rule","pred_label","prob_0","prob_1"]
+    keep_cols = ["id", "data", "ts", "false_positive", "component", "rule","pred_label","prob_0","prob_1"]
+    result_df = result_df[keep_cols]
     result_df.to_csv(OUTPUT_PATH, index=False, encoding="utf-8-sig")
     print(f"📄 预测结果已保存至：{OUTPUT_PATH}")
     print(f"样例预览：")
