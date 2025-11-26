@@ -211,6 +211,10 @@ merged_df.to_pickle(processed_data_path)
 print(f"✅ 待分析数据已处理完成，保存至 {processed_data_path}")
 
 
+#todo推理的结果加一个优先级和排序结果，优先级根据code_str是否为空，出现的没有见过的onehot编码的数量给定一个值（例如1，2，3，4）
+#todo先根据优先级新型排序（值越大，优先级越高），内部再通过prob_0-prob_1进行排序
+
+
 # ========================
 # 🔧 推理配置与函数（无修改）
 # ========================
@@ -240,6 +244,47 @@ def predict_with_prob(model_path, data_tensor, hidden_dim=128):
         preds = np.argmax(probs, axis=1)
     return preds, probs[:, 0], probs[:, 1]
 
+
+# ----------------------------
+# ✅ 修改：增强优先级计算函数，返回unseen明细
+# ----------------------------
+def calculate_priority_and_unseen(row, encoder, onehot_fields):
+    """
+    计算优先级（1-4级，值越大优先级越高，模型结果越可靠）
+    同时返回未见过的字段明细
+    返回值：(priority, unseen_count, unseen_fields, unseen_values)
+    """
+    # 基础优先级：4（最可靠）
+    priority = 4
+    unseen_count = 0
+    unseen_fields = []  # 存储未见过的字段名
+    unseen_values = []  # 存储未见过的字段对应值（与unseen_fields一一对应）
+
+    # 条件1：code_str为空 → 减1
+    code_str_empty = pd.isna(row["code_str"]) or row["code_str"].strip() == ""
+    if code_str_empty:
+        priority -= 1
+
+    # 条件2：检查每个onehot字段是否有未见过的值
+    for field in onehot_fields:
+        field_value = str(row[field]).strip()
+        field_idx = onehot_fields.index(field)
+        known_categories = encoder.categories_[field_idx]
+        # 空字符串或不在已知类别中 → 视为未见过
+        if field_value == "" or field_value not in known_categories:
+            unseen_count += 1
+            unseen_fields.append(field)
+            unseen_values.append(field_value)
+
+    # 减去未见过的字段数量
+    priority -= unseen_count
+
+    # 确保优先级不低于1
+    priority = max(1, priority)
+
+    # 返回优先级和unseen明细
+    return priority, unseen_count, unseen_fields, unseen_values
+
 if __name__ == "__main__":
     print("🚀 开始模型推理...")
     original_df, X_new = load_new_data(DATA_PATH)
@@ -253,58 +298,102 @@ if __name__ == "__main__":
     result_df["pred_label"] = preds
     result_df["prob_0"] = prob_0
     result_df["prob_1"] = prob_1
-    # 最终只保留 ["id", "data", "ts", "false_positive", "component", "rule","pred_label","prob_0","prob_1"]
-    keep_cols = ["id", "data", "ts", "false_positive", "component", "rule","pred_label","prob_0","prob_1"]
-    result_df = result_df[keep_cols]
-    #todo 计算一下pred_label和false_positive的一致情况
-    # 如果false_positive为f，那么pred_label为0就是一致的
-    # 如果false_positive为t，那么pred_label为1就是一致的
-    # --- TODO：计算 pred_label 和 false_positive 是否一致 ---
-    #todo 计算一下召回率，准确度，精确度
-    result_df["is_match"] = result_df.apply(
-        lambda row: (
-                (row["false_positive"] == "f" and row["pred_label"] == 0) or
-                (row["false_positive"] == "t" and row["pred_label"] == 1)
-        ),
-        axis=1
+
+    # ----------------------------
+    # ✅ 计算优先级（修改后逻辑）
+    # ----------------------------
+    print("📊 计算样本优先级...")
+    priority_list = []
+    unseen_count_list = []
+    unseen_fields_list = []
+    unseen_values_list = []
+
+    for idx, row in tqdm(result_df.iterrows(), total=len(result_df), desc="处理样本"):
+        priority, unseen_count, unseen_fields, unseen_values = calculate_priority_and_unseen(
+            row, encoder, ONEHOT_FIELDS
+        )
+        priority_list.append(priority)
+        unseen_count_list.append(unseen_count)
+        unseen_fields_list.append(unseen_fields)
+        unseen_values_list.append(unseen_values)
+
+    # 将明细添加到结果表中
+    result_df["priority"] = priority_list
+    result_df["unseen_count"] = unseen_count_list
+    result_df["unseen_fields"] = [",".join(fields) for fields in unseen_fields_list]  # 转为字符串，方便保存CSV
+    result_df["unseen_values"] = [",".join(values) for values in unseen_values_list]  # 转为字符串，方便保存CSV
+
+    # ----------------------------
+    # ✅ 计算排序关键字（保持不变）
+    # ----------------------------
+    result_df["sort_key"] = result_df["prob_0"] - result_df["prob_1"]
+
+    # ----------------------------
+    # ✅ 按优先级和排序关键字排序（保持不变）
+    # ----------------------------
+    # 排序规则：1. 优先级降序（值越大越可靠，越靠前）；2. sort_key降序（同优先级内排序）
+    result_df_sorted = result_df.sort_values(
+        by=["priority", "sort_key"],
+        ascending=[False, False],
+        ignore_index=True
     )
 
-    # 📌 这里加入统计代码
-    total = len(result_df)
-    match_count = result_df["is_match"].sum()
-    match_ratio = match_count / total if total > 0 else 0
 
-    print(f"🔢 一致数量（is_match=True）：{match_count}")
-    print(f"📊 一致占比：{match_ratio:.4f}  （约 {match_ratio * 100:.2f}% ）")
-
-    # --- 计算评估指标（召回率 Recall、准确度 Accuracy、精确度 Precision） ---
-
-    # 1. 将 false_positive 转换为真实标签 y_true
-    result_df["true_label"] = result_df["false_positive"].map({"f": 0, "t": 1})
-
-    y_true = result_df["true_label"].tolist()
-    y_pred = result_df["pred_label"].tolist()
-
-    # 2. 计算 TP, FP, TN, FN
-    TP = sum((result_df["true_label"] == 1) & (result_df["pred_label"] == 1))
-    TN = sum((result_df["true_label"] == 0) & (result_df["pred_label"] == 0))
-    FP = sum((result_df["true_label"] == 0) & (result_df["pred_label"] == 1))
-    FN = sum((result_df["true_label"] == 1) & (result_df["pred_label"] == 0))
-
-    # 3. 指标计算（避免除零）
-    accuracy = (TP + TN) / total if total > 0 else 0
-    recall = TP / (TP + FN) if (TP + FN) > 0 else 0
-    precision = TP / (TP + FP) if (TP + FP) > 0 else 0
-
-    print("\n📊 —— 评估指标 ——")
-    print(f"🎯 准确度 Accuracy：{accuracy:.4f} （{accuracy * 100:.2f}%）")
-    print(f"📈 召回率 Recall：{recall:.4f} （{recall * 100:.2f}%）")
-    print(f"🎯 精确度 Precision：{precision:.4f} （{precision * 100:.2f}%）")
-
-    print(f"\n🔍 TP={TP}, FP={FP}, TN={TN}, FN={FN}")
+    # 最终只保留 ["id", "data", "ts", "false_positive", "component", "rule","pred_label","prob_0","prob_1"]
+    keep_cols = ["id", "data", "ts", "false_positive", "component", "rule",
+                 "pred_label", "prob_0", "prob_1", "priority", "unseen_count",
+                 "unseen_fields", "unseen_values", "sort_key"]
+    result_df_sorted = result_df_sorted[keep_cols]
+    result_df_sorted["sorted_rank"] = range(1, len(result_df_sorted) + 1)
+    #计算一下pred_label和false_positive的一致情况
+    # 如果false_positive为f，那么pred_label为0就是一致的
+    # 如果false_positive为t，那么pred_label为1就是一致的
+    # --- 计算 pred_label 和 false_positive 是否一致 ---
+    # #计算一下召回率，准确度，精确度
+    # result_df["is_match"] = result_df.apply(
+    #     lambda row: (
+    #             (row["false_positive"] == "f" and row["pred_label"] == 0) or
+    #             (row["false_positive"] == "t" and row["pred_label"] == 1)
+    #     ),
+    #     axis=1
+    # )
+    #
+    # # 📌 这里加入统计代码
+    # total = len(result_df)
+    # match_count = result_df["is_match"].sum()
+    # match_ratio = match_count / total if total > 0 else 0
+    #
+    # print(f"🔢 一致数量（is_match=True）：{match_count}")
+    # print(f"📊 一致占比：{match_ratio:.4f}  （约 {match_ratio * 100:.2f}% ）")
+    #
+    # # --- 计算评估指标（召回率 Recall、准确度 Accuracy、精确度 Precision） ---
+    #
+    # # 1. 将 false_positive 转换为真实标签 y_true
+    # result_df["true_label"] = result_df["false_positive"].map({"f": 0, "t": 1})
+    #
+    # y_true = result_df["true_label"].tolist()
+    # y_pred = result_df["pred_label"].tolist()
+    #
+    # # 2. 计算 TP, FP, TN, FN
+    # TP = sum((result_df["true_label"] == 1) & (result_df["pred_label"] == 1))
+    # TN = sum((result_df["true_label"] == 0) & (result_df["pred_label"] == 0))
+    # FP = sum((result_df["true_label"] == 0) & (result_df["pred_label"] == 1))
+    # FN = sum((result_df["true_label"] == 1) & (result_df["pred_label"] == 0))
+    #
+    # # 3. 指标计算（避免除零）
+    # accuracy = (TP + TN) / total if total > 0 else 0
+    # recall = TP / (TP + FN) if (TP + FN) > 0 else 0
+    # precision = TP / (TP + FP) if (TP + FP) > 0 else 0
+    #
+    # print("\n📊 —— 评估指标 ——")
+    # print(f"🎯 准确度 Accuracy：{accuracy:.4f} （{accuracy * 100:.2f}%）")
+    # print(f"📈 召回率 Recall：{recall:.4f} （{recall * 100:.2f}%）")
+    # print(f"🎯 精确度 Precision：{precision:.4f} （{precision * 100:.2f}%）")
+    #
+    # print(f"\n🔍 TP={TP}, FP={FP}, TN={TN}, FN={FN}")
 
     # ----------------------------------------------------------
-    result_df.to_csv(OUTPUT_PATH, index=False, encoding="utf-8-sig")
+    result_df_sorted.to_csv(OUTPUT_PATH, index=False, encoding="utf-8-sig")
     print(f"📄 预测结果已保存至：{OUTPUT_PATH}")
     print(f"样例预览：")
-    print(result_df.head())
+    print(result_df_sorted.head())
