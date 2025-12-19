@@ -18,7 +18,11 @@ from transformers import AutoTokenizer, AutoModel
 from torch_geometric.data import Batch
 from sklearn.preprocessing import OneHotEncoder
 
-from supervised_train.model import LogClassifier, GAE_GIN
+import sys
+
+sys.path.append('..')
+from supervised_train.model import LogClassifier
+from unsupervised_train.model import GAE_GIN
 from unsupervised_train.preprocess import generate_graph_in_memory
 
 # Pydantic模型定义
