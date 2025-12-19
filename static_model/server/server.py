@@ -35,8 +35,8 @@ class PredictionRequest(BaseModel):
     test_suite: str = Field(..., description="测试套件")
     rule: str = Field(..., description="规则名称")
     code_str: str = Field(..., description="代码字符串")
-    Desc: Optional[str] = Field("", description="描述信息")
-    Func: Optional[str] = Field("", description="函数名称")
+    desc: Optional[str] = Field("", description="描述信息")
+    func: Optional[str] = Field("", description="函数名称")
     case_spce: Optional[str] = Field("", description="用例规格")
     case_purpose: Optional[str] = Field("", description="用例目的")
 
@@ -100,7 +100,7 @@ class ModelInferenceService:
         self.encoder_columns = None
         
         self.onehot_fields = ["component", "case_id", "test_suite", "rule"]
-        self.text_columns = ["Desc", "Func", "case_spce", "case_purpose"]
+        self.text_columns = ["desc", "func", "case_spce", "case_purpose"]
         
         logger.info(f"Using device: {self.device}")
     
