@@ -138,8 +138,7 @@ class ModelInferenceService:
                 logger.warning(f"文本编码模型路径不存在: {config.text_model_path}")
             
             if os.path.exists(config.classifier_model_path):
-                dummy_input_dim = 1000
-                self.classifier_model = LogClassifier(input_dim=dummy_input_dim, hidden_dim=self.hidden_dim)
+                self.classifier_model = LogClassifier(input_dim=1935, hidden_dim=self.hidden_dim)
                 self.classifier_model.load_state_dict(torch.load(config.classifier_model_path, map_location=self.device))
                 self.classifier_model.to(self.device)
                 self.classifier_model.eval()
