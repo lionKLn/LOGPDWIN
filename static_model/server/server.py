@@ -117,7 +117,7 @@ class ModelInferenceService:
                 raise FileNotFoundError(f"编码器文件不存在: {config.onehot_encoder_path} 或 {config.onehot_features_path}")
             
             self.encoder = joblib.load(config.onehot_encoder_path)
-            self.encoder_columns = np.load(config.onehot_features_path).tolist()
+            self.encoder_columns = np.load(config.onehot_features_path, allow_pickle=True).tolist()
             
             logger.info("✅ One-hot编码器加载成功")
             
