@@ -1,3 +1,4 @@
+from cmath import log
 import torch
 import pandas as pd
 import numpy as np
@@ -177,31 +178,33 @@ class ModelInferenceService:
             with torch.no_grad():
                 if self.graph_model is not None:
                     embedding = self.graph_model.forward(batch, mode="predict")
+                    logger.info(f"图编码成功，嵌入维度: {embedding.shape}")
                     return embedding[0] if len(embedding) > 0 else torch.zeros(self.embedding_dim, device=self.device)
                 else:
                     return torch.zeros(self.embedding_dim, device=self.device)
                     
         except Exception as e:
             logger.error(f"图编码失败: {str(e)}")
-            return torch.zeros(self.embedding_dim, device=self.device)
-    
+            raise e    
+
     def mean_pooling(self, model_output, attention_mask):
         """Mean pooling for text embeddings"""
         token_embeddings = model_output.last_hidden_state
         input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
         sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, dim=1)
         sum_mask = torch.clamp(input_mask_expanded.sum(dim=1), min=1e-9)
+        logger.info(f"文本编码成功，嵌入维度: {sum_embeddings.shape}")
         return sum_embeddings / sum_mask
     
     def encode_text(self, text: str) -> List[float]:
         """编码文本为向量"""
         try:
             if not text or self.text_model is None or self.tokenizer is None:
-                return [0.0] * 384
+                raise ValueError("❌ 文本编码模型未加载，请检查模型路径")
             
             text = str(text).strip()
             if not text:
-                return [0.0] * 384
+                raise ValueError("❌ 输入文本为空")
             
             encoded = self.tokenizer(
                 text, 
@@ -216,20 +219,24 @@ class ModelInferenceService:
             with torch.no_grad():
                 outputs = self.text_model(input_ids=input_ids, attention_mask=attention_mask)
                 sentence_embedding = self.mean_pooling(outputs, attention_mask)
+                logger.info(f"文本编码成功，嵌入维度: {sentence_embedding.shape}")
                 return sentence_embedding.cpu().tolist()[0]
                 
         except Exception as e:
             logger.error(f"文本编码失败: {str(e)}")
             raise e    
+
     def encode_onehot(self, data: Dict[str, str]) -> List[float]:
         """One-hot编码离散特征"""
         if self.encoder is None or self.encoder_columns is None:
             raise FileNotFoundError("❌ 未找到编码器文件，请确保 onehot_encoder.pkl 和 onehot_feature_names.npy 存在")
 
         onehot_input = pd.DataFrame([data])[self.onehot_fields].fillna("").astype(str)
+        logger.info(f"One-hot编码输入数据: {onehot_input}")
 
         try:
             onehot_encoded = self.encoder.transform(onehot_input)
+            logger.info(f"One-hot编码成功，编码维度: {onehot_encoded.shape}")
         except ValueError as e:
             raise ValueError(f"❌ 编码失败：输入字段与训练时不一致，请检查 ONEHOT_FIELDS。错误详情：{e}")
 
@@ -239,7 +246,7 @@ class ModelInferenceService:
             if col not in onehot_df.columns:
                 onehot_df[col] = 0
         onehot_df = onehot_df[self.encoder_columns]
-
+        logger.info(f"One-hot datafram编码成功，编码维度: {onehot_df.shape}")
         return onehot_df.iloc[0].tolist()
     
     def merge_features(self, code_embedding: List[float], text_embeddings: Dict[str, List[float]], 
@@ -248,7 +255,7 @@ class ModelInferenceService:
         text_embs = []
         for col in self.text_columns:
             text_embs.extend(text_embeddings.get(col, [0.0] * 384))
-        
+        logger.info(f"合并特征成功，总维度: {len(code_embedding + text_embs + onehot_embedding)}")
         return code_embedding + text_embs + onehot_embedding
     
     def predict_single(self, data: PredictionRequest) -> PredictionResponse:
