@@ -223,30 +223,24 @@ class ModelInferenceService:
             raise e    
     def encode_onehot(self, data: Dict[str, str]) -> List[float]:
         """One-hot编码离散特征"""
+        if self.encoder is None or self.encoder_columns is None:
+            raise FileNotFoundError("❌ 未找到编码器文件，请确保 onehot_encoder.pkl 和 onehot_feature_names.npy 存在")
+
+        onehot_input = pd.DataFrame([data])[self.onehot_fields].fillna("").astype(str)
+
         try:
-            onehot_input = pd.DataFrame([data])
-            for field in self.onehot_fields:
-                if field not in onehot_input.columns:
-                    onehot_input[field] = ""
-            onehot_input = onehot_input[self.onehot_fields].fillna("").astype(str)
-            
-            if self.encoder is None:
-                return [0.0] * len(self.encoder_columns) if self.encoder_columns else []
-            
             onehot_encoded = self.encoder.transform(onehot_input)
-            onehot_df = pd.DataFrame(onehot_encoded, columns=self.encoder.get_feature_names_out(self.onehot_fields))
-            
-            if self.encoder_columns is not None:
-                for col in self.encoder_columns:
-                    if col not in onehot_df.columns:
-                        onehot_df[col] = 0
-            
-            onehot_df = onehot_df[self.encoder_columns]
-            return onehot_df.iloc[0].tolist()
-            
-        except Exception:
-            logger.exception("One-hot编码失败")
-            raise
+        except ValueError as e:
+            raise ValueError(f"❌ 编码失败：输入字段与训练时不一致，请检查 ONEHOT_FIELDS。错误详情：{e}")
+
+        onehot_df = pd.DataFrame(onehot_encoded, columns=self.encoder.get_feature_names_out(self.onehot_fields))
+
+        for col in self.encoder_columns:
+            if col not in onehot_df.columns:
+                onehot_df[col] = 0
+        onehot_df = onehot_df[self.encoder_columns]
+
+        return onehot_df.iloc[0].tolist()
     
     def merge_features(self, code_embedding: List[float], text_embeddings: Dict[str, List[float]], 
                       onehot_embedding: List[float]) -> List[float]:
