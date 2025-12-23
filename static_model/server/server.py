@@ -220,12 +220,15 @@ class ModelInferenceService:
                 
         except Exception as e:
             logger.error(f"文本编码失败: {str(e)}")
-            return [0.0] * 384
-    
+            raise e    
     def encode_onehot(self, data: Dict[str, str]) -> List[float]:
         """One-hot编码离散特征"""
         try:
-            onehot_input = pd.DataFrame([data])[self.onehot_fields].fillna("").astype(str)
+            onehot_input = pd.DataFrame([data])
+            for field in self.onehot_fields:
+                if field not in onehot_input.columns:
+                    onehot_input[field] = ""
+            onehot_input = onehot_input[self.onehot_fields].fillna("").astype(str)
             
             if self.encoder is None:
                 return [0.0] * len(self.encoder_columns) if self.encoder_columns else []
@@ -233,16 +236,17 @@ class ModelInferenceService:
             onehot_encoded = self.encoder.transform(onehot_input)
             onehot_df = pd.DataFrame(onehot_encoded, columns=self.encoder.get_feature_names_out(self.onehot_fields))
             
-            for col in self.encoder_columns:
-                if col not in onehot_df.columns:
-                    onehot_df[col] = 0
+            if self.encoder_columns is not None:
+                for col in self.encoder_columns:
+                    if col not in onehot_df.columns:
+                        onehot_df[col] = 0
             
             onehot_df = onehot_df[self.encoder_columns]
             return onehot_df.iloc[0].tolist()
             
-        except Exception as e:
-            logger.error(f"One-hot编码失败: {str(e)}")
-            return [0.0] * len(self.encoder_columns) if self.encoder_columns else []
+        except Exception:
+            logger.exception("One-hot编码失败")
+            raise
     
     def merge_features(self, code_embedding: List[float], text_embeddings: Dict[str, List[float]], 
                       onehot_embedding: List[float]) -> List[float]:
@@ -304,14 +308,7 @@ class ModelInferenceService:
         except Exception as e:
             logger.error(f"预测失败: {str(e)}")
             logger.error(traceback.format_exc())
-            return PredictionResponse(
-                pred_label=0,
-                prob_0=0.5,
-                prob_1=0.5,
-                confidence=0.5,
-                status='error',
-                error=str(e)
-            )
+            raise e
     
     def predict_batch(self, batch_data: List[PredictionRequest]) -> List[PredictionResponse]:
         """批量预测"""
@@ -347,10 +344,13 @@ async def startup_event():
     """应用启动时加载默认模型"""
     logger.info("启动模型推理API服务...")
     
-    default_config = ModelConfig()
+    # 设置模型配置
+    model_config = ModelConfig(
+        
+    )
     
     try:
-        service.load_models(default_config)
+        service.load_models(model_config)
         logger.info("✅ 默认模型加载完成")
     except Exception as e:
         logger.warning(f"默认模型加载失败: {str(e)}")
