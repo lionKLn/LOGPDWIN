@@ -45,11 +45,11 @@ for i, row in orig_df.iterrows():
         else:
             processed_code = f"(){{{raw_code}}}"
 
+        # 修改代码，去掉rule特征，去掉component特征，不然会导致后续与源文件列表项合并的时候出现特征名顺序不一致的报错
         results.append({
             "component": data.get("component", ""),
             "case_id": data.get("case_id", ""),
             "test_suite": data.get("test_suite", ""),
-            "rule": data.get("rule", ""),  # 按ONEHOT_FIELDS顺序排列字段
             "code_str": processed_code,
             "raw_code": raw_code,
             "Desc": data.get("desc", ""),
