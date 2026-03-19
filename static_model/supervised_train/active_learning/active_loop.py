@@ -1,6 +1,26 @@
 import torch
-from trainer import train_model, predict_proba
+from trainer import train_model_active, predict_proba
 from sampler import uncertainty_sampling
+
+
+from sklearn.metrics import f1_score, accuracy_score
+import torch
+
+
+def evaluate(model, X_test, y_test, device, pos_label=0):
+    model.eval()
+    preds = []
+
+    with torch.no_grad():
+        outputs = model(X_test.to(device))
+        preds = torch.argmax(outputs, dim=1).cpu().numpy()
+
+    y_true = y_test.numpy()
+
+    return {
+        "accuracy": accuracy_score(y_true, preds),
+        "f1": f1_score(y_true, preds, pos_label=pos_label)
+    }
 
 
 def active_learning_loop(
@@ -8,44 +28,53 @@ def active_learning_loop(
     X_pool,
     y_labeled,
     y_pool,
+    X_test,
+    y_test,
     rounds=10,
     query_size=100
 ):
-    for r in range(rounds):
-        print(f"\n===== Active Learning Round {r} =====")
+    device = get_device()
 
-        # 1️⃣ 训练模型
-        model = train_model(
-            X_train=X_labeled,
-            y_train=y_labeled,
-            epochs=20
+    history = []
+
+    for r in range(rounds):
+        print(f"\n===== Round {r} =====")
+
+        # 1️⃣ 划分 validation（从 labeled 中切）
+
+        # 2️⃣ 训练模型
+        model = train_model_active(
+            X_train=X_labeled, y_train=y_labeled,
         )
 
-        # 2️⃣ 预测 pool
-        probs = predict_proba(model, X_pool)
+        # 3️⃣ 测试集评估（🔥关键）
+        metrics = evaluate(model, X_test, y_test, device)
 
-        # 3️⃣ 选择最不确定样本
+        print(f"Test Acc={metrics['accuracy']:.4f}, F1={metrics['f1']:.4f}")
+
+        history.append(metrics)
+
+        # 4️⃣ 主动学习采样
+        probs = predict_proba(model, X_pool)
         selected_idx = uncertainty_sampling(probs, query_size)
 
-        # 4️⃣ 获取样本
+        # 更新数据
         X_selected = X_pool[selected_idx]
         y_selected = y_pool[selected_idx]
 
-        # 5️⃣ 更新 labeled
         X_labeled = torch.cat([X_labeled, X_selected])
         y_labeled = torch.cat([y_labeled, y_selected])
 
-        # 6️⃣ 更新 pool
         mask = torch.ones(len(X_pool), dtype=torch.bool)
         mask[selected_idx] = False
 
         X_pool = X_pool[mask]
         y_pool = y_pool[mask]
 
-        print(f"Labeled size: {len(X_labeled)} | Pool size: {len(X_pool)}")
-
         if len(X_pool) == 0:
-            print("Pool empty, stop.")
             break
 
-    return model
+    # 保存最终模型
+    torch.save(model.state_dict(), "final_active_model.pt")
+
+    return model, history

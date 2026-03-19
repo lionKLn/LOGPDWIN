@@ -33,33 +33,28 @@ def calculate_class_weights(y):
 
 
 # ⭐ 改造后的训练函数
-def train_model(
+def train_model_active(
     X_train,
     y_train,
-    X_val=None,
-    y_val=None,
-    epochs=20,
-    batch_size=32,
-    lr=5e-4,
+    epochs=10,
     hidden_dim=128
 ):
     device = get_device()
 
-    train_dataset = FeatureDataset(X_train, y_train)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    dataset = FeatureDataset(X_train, y_train)
+    loader = DataLoader(dataset, batch_size=32, shuffle=True)
 
-    input_dim = X_train.shape[1]
-    model = LogClassifier(input_dim, hidden_dim).to(device)
+    model = LogClassifier(X_train.shape[1], hidden_dim).to(device)
 
-    class_weights = calculate_class_weights(y_train).to(device)
+    class_weights = calculate_class_weights(y_train, device)
     criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=5e-4)
 
-    # 训练
-    model.train()
     for epoch in range(epochs):
+        model.train()
         total_loss = 0
-        for X_batch, y_batch in train_loader:
+
+        for X_batch, y_batch in loader:
             X_batch, y_batch = X_batch.to(device), y_batch.to(device)
 
             outputs = model(X_batch)
@@ -71,7 +66,7 @@ def train_model(
 
             total_loss += loss.item()
 
-        print(f"Epoch {epoch+1}/{epochs}, Loss={total_loss:.4f}")
+        print(f"Epoch {epoch+1}, Loss={total_loss:.4f}")
 
     return model
 
