@@ -49,35 +49,74 @@ def get_device():
     return torch.device("npu:5" if npu_available else "cpu")
 
 
-def load_and_split_data(data_path, test_size=0.2, seed=42):
+#
+
+
+
+def load_and_split_data(data_path, test_size=0.2, seed=42, dedup_by_id=True):
     """
     加载数据并划分训练/测试集（分层抽样）
     :param data_path: 数据文件路径（.pkl）
     :param test_size: 测试集占比
-    :param seed: 随机种子（保证可复现）
-    :return: X_train, X_test, y_train, y_test（均为torch张量）
+    :param seed: 随机种子
+    :param dedup_by_id: 是否按id去重
+    :return: X_train, X_test, y_train, y_test（torch张量）
     """
     if not os.path.exists(data_path):
         raise FileNotFoundError(f"数据文件不存在：{data_path}")
 
     data = pd.read_pickle(data_path)
+
+    print(f"原始样本数：{len(data)}")
+    print(f"数据列：{list(data.columns)}")
+
+    # ----------------------------
+    # 1. 按 id 去重，避免重复样本跨训练/测试集
+    # ----------------------------
+    if dedup_by_id:
+        if "id" not in data.columns:
+            raise KeyError(
+                "pkl文件中不存在'id'列，无法按id去重。"
+                "请先检查 processed_dataset.pkl 是否保留了原始Excel中的id字段。"
+            )
+
+        # 统一格式，避免 1 和 '1'、空格等问题
+        data["id"] = data["id"].astype(str).str.strip()
+
+        # 可选：去掉空id
+        invalid_id_mask = data["id"].isna() | (data["id"] == "") | (data["id"].str.lower() == "nan")
+        if invalid_id_mask.any():
+            print(f"警告：发现 {invalid_id_mask.sum()} 条空id/非法id数据，将被删除")
+            data = data[~invalid_id_mask].copy()
+
+        before_dedup = len(data)
+        data = data.drop_duplicates(subset=["id"], keep="first").reset_index(drop=True)
+        after_dedup = len(data)
+
+        print(f"按id去重前样本数：{before_dedup}")
+        print(f"按id去重后样本数：{after_dedup}")
+        print(f"共去除重复样本数：{before_dedup - after_dedup}")
+
+    # ----------------------------
+    # 2. 构造训练数据
+    # ----------------------------
     X = torch.tensor(data["merged_features"].tolist(), dtype=torch.float32)
     y = torch.tensor(data["false_positive"].tolist(), dtype=torch.long)
 
+    # ----------------------------
+    # 3. 分层划分训练/测试集
+    # ----------------------------
     X_train, X_test, y_train, y_test = train_test_split(
         X, y,
         test_size=test_size,
         random_state=seed,
-        stratify=y  # 分层抽样，保证标签分布一致
+        stratify=y
     )
 
-    # 打印数据分布（可选，外部调用时可注释）
     print(f"数据加载完成：")
     print(f"- 总样本数：{len(X)} | 训练集：{len(X_train)} | 测试集：{len(X_test)}")
-    print(
-        f"- 训练集0类占比：{torch.sum(y_train == 0) / len(y_train):.2%}，1类占比：{torch.sum(y_train == 1) / len(y_train):.2%}")
-    print(
-        f"- 测试集0类占比：{torch.sum(y_test == 0) / len(y_test):.2%}，1类占比：{torch.sum(y_test == 1) / len(y_test):.2%}")
+    print(f"- 训练集0类占比：{torch.sum(y_train == 0) / len(y_train):.2%}，1类占比：{torch.sum(y_train == 1) / len(y_train):.2%}")
+    print(f"- 测试集0类占比：{torch.sum(y_test == 0) / len(y_test):.2%}，1类占比：{torch.sum(y_test == 1) / len(y_test):.2%}")
 
     return X_train, X_test, y_train, y_test
 
