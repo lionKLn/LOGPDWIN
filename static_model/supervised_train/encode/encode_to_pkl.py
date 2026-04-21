@@ -407,6 +407,7 @@ def encode_excel_to_pkl(
 
 
 if __name__ == "__main__":
+    # 测试推理模式下的编码
     encode_excel_to_pkl(
         input_excel="../test/temp.xlsx",
         output_pkl="../test/data_to_infer.pkl",
@@ -417,4 +418,17 @@ if __name__ == "__main__":
         embedding_dim=256,
         mode="infer"
     )
+
+    # 测试训练模式下的编码
+    encode_excel_to_pkl(
+        input_excel="../test/temp.xlsx",
+        output_pkl="../test/data_to_train.pkl",
+        unsupervised_model_path="../pdg_model/best_pdg.pt",
+        text_model_path="../models/paraphrase-multilingual-MiniLM-L12-v2",
+        onehot_encoder_path="../test/onehot_encoder_train.pkl",
+        onehot_feature_names_path="../test/onehot_feature_names_train.npy",
+        embedding_dim=256,
+        mode="train"
+    )
+
     
