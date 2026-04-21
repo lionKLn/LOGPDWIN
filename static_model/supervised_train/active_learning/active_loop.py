@@ -36,7 +36,8 @@ def active_learning_loop(
     y_test,
     rounds=10,
     query_size=100,
-    sampling_strategy="uncertainty_sampling"
+    sampling_strategy="uncertainty_sampling",
+    mode_save_path = "final_active_model.pt"
 ):
     #device = get_device()
 
@@ -80,6 +81,6 @@ def active_learning_loop(
             break
 
     # 保存最终模型
-    torch.save(model.state_dict(), "final_active_model.pt")
+    torch.save(model.state_dict(), mode_save_path)
 
     return model, history

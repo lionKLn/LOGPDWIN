@@ -23,7 +23,8 @@ def main():
         y_pool,
         rounds=10,
         query_size=200,
-        sampling_strategy="uncertainty_sampling"
+        sampling_strategy="uncertainty_sampling",
+        mode_save_path="final_active_model.pt"
     )
 
     print(history)
