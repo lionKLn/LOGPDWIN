@@ -11,6 +11,7 @@ from torch_geometric.data import Batch
 
 from unsupervised_train.preprocess import generate_graph_in_memory
 from model import GAE_GIN
+from sklearn.preprocessing import OneHotEncoder
 
 
 # ========================
@@ -218,39 +219,77 @@ def encode_onehot_features(
     merged_df: pd.DataFrame,
     onehot_encoder_path: str,
     onehot_feature_names_path: str,
-    onehot_fields=None
+    onehot_fields=None,
+    mode: str = "infer"   # ===== 修改2：新增 mode 参数 =====
 ) -> tuple[pd.DataFrame, list]:
     if onehot_fields is None:
         onehot_fields = ["component", "case_id", "test_suite", "rule"]
 
-    if not os.path.exists(onehot_encoder_path) or not os.path.exists(onehot_feature_names_path):
-        raise FileNotFoundError(
-            f"未找到 OneHot 编码器文件，请检查: {onehot_encoder_path}, {onehot_feature_names_path}"
+    if mode not in ["train", "infer"]:  # ===== 修改3：新增 mode 校验 =====
+        raise ValueError(f"mode 必须是 'train' 或 'infer'，当前为: {mode}")
+
+    # ===== 修改4：统一先做空值填充与字符串转换 =====
+    merged_df[onehot_fields] = merged_df[onehot_fields].fillna("").astype(str)
+    onehot_input = merged_df[onehot_fields]
+
+    # ===== 修改5：train 模式，fit_transform 并保存编码器 =====
+    if mode == "train":
+        print("One-hot 编码：train 模式，拟合并保存编码器...")
+
+        onehot_encoder = OneHotEncoder(
+            sparse_output=False,
+            handle_unknown="ignore"
         )
 
-    encoder = joblib.load(onehot_encoder_path)
-    encoder_columns = np.load(onehot_feature_names_path).tolist()
+        onehot_features = onehot_encoder.fit_transform(onehot_input)
 
-    onehot_input = merged_df[onehot_fields].fillna("").astype(str)
+        # 注意：这里按照你给的训练代码逻辑保存
+        joblib.dump(onehot_encoder, onehot_encoder_path)
+        np.save(onehot_feature_names_path, onehot_encoder.get_feature_names_out())
 
-    try:
-        onehot_encoded = encoder.transform(onehot_input)
-    except ValueError as e:
-        raise ValueError(f"One-hot 编码失败，输入字段与训练时不一致: {e}")
+        print(f"One-hot编码器已保存至 {onehot_encoder_path} 和 {onehot_feature_names_path}")
 
-    onehot_df = pd.DataFrame(
-        onehot_encoded,
-        columns=encoder.get_feature_names_out(onehot_fields)
-    )
+        encoder_columns = onehot_encoder.get_feature_names_out().tolist()
 
-    for col in encoder_columns:
-        if col not in onehot_df.columns:
-            onehot_df[col] = 0
+        onehot_df = pd.DataFrame(
+            onehot_features,
+            columns=onehot_encoder.get_feature_names_out()
+        )
 
-    onehot_df = onehot_df[encoder_columns]
-    merged_df = pd.concat([merged_df, onehot_df], axis=1)
+        merged_df = pd.concat([merged_df, onehot_df], axis=1)
+        return merged_df, encoder_columns
 
-    return merged_df, encoder_columns
+    # ===== 修改6：infer 模式，加载已有编码器并 transform =====
+    else:
+        print("One-hot 编码：infer 模式，加载已有编码器...")
+
+        if not os.path.exists(onehot_encoder_path) or not os.path.exists(onehot_feature_names_path):
+            raise FileNotFoundError(
+                f"未找到 OneHot 编码器文件，请检查: {onehot_encoder_path}, {onehot_feature_names_path}"
+            )
+
+        encoder = joblib.load(onehot_encoder_path)
+        encoder_columns = np.load(onehot_feature_names_path, allow_pickle=True).tolist()
+
+        try:
+            onehot_encoded = encoder.transform(onehot_input)
+        except ValueError as e:
+            raise ValueError(f"One-hot 编码失败，输入字段与训练时不一致: {e}")
+
+        # 这里推理时列名要显式传 onehot_fields，保证和 transform 输入一致
+        onehot_df = pd.DataFrame(
+            onehot_encoded,
+            columns=encoder.get_feature_names_out(onehot_fields)
+        )
+
+        for col in encoder_columns:
+            if col not in onehot_df.columns:
+                onehot_df[col] = 0
+
+        onehot_df = onehot_df[encoder_columns]
+        merged_df = pd.concat([merged_df, onehot_df], axis=1)
+
+        return merged_df, encoder_columns
 
 
 # ========================
@@ -333,11 +372,12 @@ def encode_excel_to_pkl(
         text_model_path=text_model_path
     )
 
-    # 4. One-hot 编码
+    # ===== 4：调用 one-hot 时传入 mode =====
     merged_df, encoder_columns = encode_onehot_features(
         merged_df=merged_df,
         onehot_encoder_path=onehot_encoder_path,
-        onehot_feature_names_path=onehot_feature_names_path
+        onehot_feature_names_path=onehot_feature_names_path,
+        mode=mode
     )
 
     # 5. 特征融合
@@ -368,12 +408,12 @@ def encode_excel_to_pkl(
 
 if __name__ == "__main__":
     encode_excel_to_pkl(
-        input_excel="path/to/your/input.xlsx",
-        output_pkl="data_to_infer.pkl",
-        unsupervised_model_path="logs/pdg/2025-05-20_14-30-00/best_pdg.pt",
-        text_model_path="./models/paraphrase-multilingual-MiniLM-L12-v2",
-        onehot_encoder_path="onehot_encoder.pkl",
-        onehot_feature_names_path="onehot_feature_names.npy",
+        input_excel="../test/temp.xlsx",
+        output_pkl="../test/data_to_infer.pkl",
+        unsupervised_model_path="../pdg_model/best_pdg.pt",
+        text_model_path="../models/paraphrase-multilingual-MiniLM-L12-v2",
+        onehot_encoder_path="../onehot_encoder.pkl",
+        onehot_feature_names_path="../onehot_feature_names.npy",
         embedding_dim=256,
         mode="infer"
     )
