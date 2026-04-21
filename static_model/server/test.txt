@@ -1,0 +1,111 @@
+二、测试 /encode
+
+这个接口因为要传文件，所以用 -F。
+
+假设你的测试文件在：
+
+/home/xxx/test.xlsx
+
+那么命令是：
+
+curl -X POST "http://127.0.0.1:8000/encode" \
+  -F "file=@/home/xxx/test.xlsx" \
+  -F "mode=train"
+
+推理模式就是：
+
+curl -X POST "http://127.0.0.1:8000/encode" \
+  -F "file=@/home/xxx/test.xlsx" \
+  -F "mode=infer"
+
+如果你的接口现在还支持 encoder_tag，那就加上：
+
+curl -X POST "http://127.0.0.1:8000/encode" \
+  -F "file=@/home/xxx/test.xlsx" \
+  -F "mode=infer" \
+  -F "encoder_tag=abc123"
+三、测试 /train
+
+这个接口是 JSON：
+
+curl -X POST "http://127.0.0.1:8000/train" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "pkl_filename": "xxx_train_xxx.pkl",
+    "rounds": 3,
+    "query_size": 100,
+    "sampling_strategy": "uncertainty_sampling",
+    "test_size": 0.2,
+    "init_ratio": 0.1,
+    "seed": 42,
+    "dedup_by_id": true
+  }'
+四、测试 /infer
+curl -X POST "http://127.0.0.1:8000/infer" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "pkl_filename": "xxx_infer_xxx.pkl",
+    "model_filename": "xxx_trained_model.pt"
+  }'
+五、测试 /sample
+curl -X POST "http://127.0.0.1:8000/sample" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "csv_filename": "xxx_inference_results.csv",
+    "learning_size": 50,
+    "exploitation_size": 100,
+    "target_label": 0,
+    "allow_overlap": false
+  }'
+六、建议你先按这个顺序测
+
+先测服务：
+
+curl http://127.0.0.1:8000/
+
+再测编码：
+
+curl -X POST "http://127.0.0.1:8000/encode" \
+  -F "file=@/home/xxx/test.xlsx" \
+  -F "mode=train"
+
+把返回里的 pkl_filename 记下来，再去测 /train。
+
+七、如果返回 JSON 不好看
+
+可以加 python -m json.tool：
+
+curl -s http://127.0.0.1:8000/ | python -m json.tool
+
+或者：
+
+curl -s -X POST "http://127.0.0.1:8000/train" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "pkl_filename": "xxx_train_xxx.pkl",
+    "rounds": 3,
+    "query_size": 100,
+    "sampling_strategy": "uncertainty_sampling",
+    "test_size": 0.2,
+    "init_ratio": 0.1,
+    "seed": 42,
+    "dedup_by_id": true
+  }' | python -m json.tool
+八、如果你想看服务端日志
+
+建议一个终端启动服务：
+
+python server/app.py
+
+另一个终端执行 curl。
+这样接口报错时，你能同时看到服务端 traceback。
+
+九、如果你不想每次手敲一长串
+
+可以写成 shell 脚本，比如 test_api.sh：
+
+#!/bin/bash
+
+curl http://127.0.0.1:8000/
+
+或者更完整一点的测试脚本。
