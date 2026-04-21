@@ -223,7 +223,7 @@ def encode_onehot_features(
     mode: str = "infer"   # ===== 修改2：新增 mode 参数 =====
 ) -> tuple[pd.DataFrame, list]:
     if onehot_fields is None:
-        onehot_fields = ["component", "case_id", "test_suite", "rule"]
+        onehot_fields = ["component", "rule", "case_id", "test_suite"]
 
     if mode not in ["train", "infer"]:  # ===== 修改3：新增 mode 校验 =====
         raise ValueError(f"mode 必须是 'train' 或 'infer'，当前为: {mode}")
