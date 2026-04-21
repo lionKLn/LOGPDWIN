@@ -18,7 +18,7 @@ from schemas import BaseResponse, InferRequest, TrainRequest, SamplingRequest
 
 from supervised_train.encode.encode_to_pkl import encode_excel_to_pkl
 from supervised_train.predict.predict_from_pkl import predict_pkl_to_csv
-from supervised_train.active_learning.data_loader import load_full_data, split_labeled_pool
+from supervised_train.active_learning.data_loader import load_and_split_active_learning
 from supervised_train.active_learning.active_loop import active_learning_loop
 from supervised_train.sample.sampling_service import generate_sampling_outputs
 
@@ -220,12 +220,14 @@ async def train_from_pkl(req: TrainRequest):
     output_model_path = MODEL_DIR / output_model_filename
 
     try:
-        # 1. 加载数据
-        X, y = load_full_data(str(pkl_path))
-
-        # 2. 初始划分
-        X_labeled, X_pool, y_labeled, y_pool = split_labeled_pool(
-            X, y, init_ratio=req.init_ratio
+        # 1. 直接从 pkl 划分出：
+        # labeled / pool / test
+        X_labeled, X_pool, y_labeled, y_pool, X_test, y_test = load_and_split_active_learning(
+            pkl_path=str(pkl_path),
+            test_size=req.test_size,
+            init_ratio=req.init_ratio,
+            seed=req.seed,
+            dedup_by_id=req.dedup_by_id
         )
 
         print(f"初始 labeled: {len(X_labeled)}, pool: {len(X_pool)}")
