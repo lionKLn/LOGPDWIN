@@ -347,12 +347,12 @@ def encode_excel_to_pkl(
     if mode == "train":
         print("进入训练模式：处理标签...")
 
-        if "status" not in merged_df.columns:
-            raise ValueError("训练模式下必须包含 status 列！")
+        if "false_positive" not in merged_df.columns:
+            raise ValueError("训练模式下必须包含 false_positive 列！")
 
         status_map = {"t": 1, "f": 0}
 
-        merged_df["false_positive"] = merged_df["status"].map(
+        merged_df["false_positive"] = merged_df["false_positive"].map(
             lambda x: status_map.get(str(x).strip().lower(), 0)
         )
 

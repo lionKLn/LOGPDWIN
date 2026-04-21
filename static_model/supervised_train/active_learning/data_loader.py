@@ -4,7 +4,17 @@ import pandas as pd
 
 
 def load_and_split_active_learning(pkl_path, test_size=0.2, init_ratio=0.1, seed=42, dedup_by_id=True):
-    df = pd.read_pickle(pkl_path)
+    loaded = pd.read_pickle(pkl_path)
+
+    # 兼容两种情况：
+    # 1. 直接保存 DataFrame
+    # 2. 保存 dict（train 模式下现在就是这个）
+    if isinstance(loaded, dict):
+        if "merged_df" not in loaded:
+            raise ValueError("pkl 中未找到 merged_df")
+        df = loaded["merged_df"]
+    else:
+        df = loaded
 
     print(f"原始样本数：{len(df)}")
     print(f"数据列：{len(df.columns)}")
