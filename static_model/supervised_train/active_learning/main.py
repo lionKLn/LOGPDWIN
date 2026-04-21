@@ -16,14 +16,17 @@ def main():
     print(f"初始 labeled: {len(X_labeled)}, pool: {len(X_pool)}")
 
     # 3️⃣ 主动学习
-    model = active_learning_loop(
+    model,history = active_learning_loop(
         X_labeled,
         X_pool,
         y_labeled,
         y_pool,
         rounds=10,
-        query_size=100
+        query_size=200,
+        sampling_strategy="uncertainty_sampling"
     )
+
+    print(history)
 
     print("\n主动学习完成！")
 

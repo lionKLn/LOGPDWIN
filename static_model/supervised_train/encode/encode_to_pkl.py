@@ -282,8 +282,15 @@ def encode_excel_to_pkl(
     text_model_path: str,
     onehot_encoder_path: str,
     onehot_feature_names_path: str,
-    embedding_dim: int = 256
+    embedding_dim: int = 256,
+    mode: str = "infer"
 ):
+    """
+    mode:
+        - "infer"：用于推理（无标签）
+        - "train"：用于训练（包含标签处理）
+    """
+    assert mode in ["infer", "train"], f"mode 必须是 infer 或 train，当前是 {mode}"
     set_npu_device()
 
     if not os.path.exists(input_excel):
@@ -292,8 +299,26 @@ def encode_excel_to_pkl(
     print(f"读取原始 Excel: {input_excel}")
     orig_df = pd.read_excel(input_excel)
 
+
     # 1. 解析 JSON
     merged_df = parse_excel_json(orig_df)
+
+    # 标签处理
+
+    if mode == "train":
+        print("进入训练模式：处理标签...")
+
+        if "status" not in merged_df.columns:
+            raise ValueError("训练模式下必须包含 status 列！")
+
+        status_map = {"t": 1, "f": 0}
+
+        merged_df["false_positive"] = merged_df["status"].map(
+            lambda x: status_map.get(str(x).strip().lower(), 0)
+        )
+
+        print("标签分布：")
+        print(merged_df["false_positive"].value_counts())
 
     # 2. 代码图编码
     merged_df = encode_code_graphs(
@@ -319,10 +344,23 @@ def encode_excel_to_pkl(
     merged_df = merge_features(merged_df, encoder_columns)
 
     # 6. 保存
-    to_save = {
-        "orig_df": orig_df,
-        "merged_df": merged_df
-    }
+    if mode == "train":
+        print("保存训练数据（包含标签）...")
+
+        to_save = {
+            "orig_df": orig_df,
+            "merged_df": merged_df,
+            "X": merged_df["merged_features"].tolist(),
+            "y": merged_df["false_positive"].tolist()
+        }
+
+    else:
+        print("保存推理数据（无标签）...")
+
+        to_save = {
+            "orig_df": orig_df,
+            "merged_df": merged_df
+        }
 
     pd.to_pickle(to_save, output_pkl)
     print(f"待预测数据预处理完成，已保存至: {output_pkl}")
@@ -336,6 +374,7 @@ if __name__ == "__main__":
         text_model_path="./models/paraphrase-multilingual-MiniLM-L12-v2",
         onehot_encoder_path="onehot_encoder.pkl",
         onehot_feature_names_path="onehot_feature_names.npy",
-        embedding_dim=256
+        embedding_dim=256,
+        mode="infer"
     )
     

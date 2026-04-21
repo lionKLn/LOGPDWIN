@@ -3,9 +3,16 @@ import torch
 import pandas as pd
 
 
-def load_and_split_active_learning(pkl_path, test_size=0.2, init_ratio=0.1, seed=42):
+def load_and_split_active_learning(pkl_path, test_size=0.2, init_ratio=0.1, seed=42, dedup_by_id=True):
     df = pd.read_pickle(pkl_path)
 
+    print(f"原始样本数：{len(df)}")
+    print(f"数据列：{len(df.columns)}")
+    if dedup_by_id:
+        #代码省略，根据id去重
+        print(f"去重后的数据数量为XXXX")
+
+    #后续就是构造数据集
     X = torch.tensor(df["merged_features"].tolist(), dtype=torch.float32)
     y = torch.tensor(df["false_positive"].tolist(), dtype=torch.long)
 

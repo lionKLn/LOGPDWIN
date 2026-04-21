@@ -7,6 +7,10 @@ from sklearn.metrics import f1_score, accuracy_score
 import torch
 
 
+
+#显式使用npu5
+torch.npu.set_device(5)
+
 def evaluate(model, X_test, y_test, device, pos_label=0):
     model.eval()
     preds = []
@@ -31,9 +35,10 @@ def active_learning_loop(
     X_test,
     y_test,
     rounds=10,
-    query_size=100
+    query_size=100,
+    sampling_strategy="uncertainty_sampling"
 ):
-    device = get_device()
+    #device = get_device()
 
     history = []
 
