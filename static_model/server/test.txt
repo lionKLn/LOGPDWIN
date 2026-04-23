@@ -34,7 +34,7 @@ curl -X POST "http://127.0.0.1:8000/train" \
     "pkl_filename": "xxx_train_xxx.pkl",
     "rounds": 3,
     "query_size": 100,
-    "sampling_strategy": "uncertainty_sampling",
+    "sampling_strategy": "uncertainty",
     "test_size": 0.2,
     "init_ratio": 0.1,
     "seed": 42,
